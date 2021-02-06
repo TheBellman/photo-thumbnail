@@ -180,6 +180,7 @@ func saveThumbnail(service s3Service, data *[]byte, bucket string, key string) e
 	return err
 }
 
+// parseMessage tries to forge the JSON message body from SNS
 func parseMessage(messageBody string) (*snsMessage, error) {
 	var message snsMessage
 	err := json.Unmarshal([]byte(messageBody), &message)
