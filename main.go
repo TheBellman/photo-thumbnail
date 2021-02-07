@@ -32,6 +32,7 @@ type snsMessage struct {
 }
 
 var params *runtimeParameters
+var buildStamp string
 
 const (
 	DefaultSrcPrefix  = "photos/"
@@ -53,6 +54,7 @@ type runtimeParameters struct {
 }
 
 func init() {
+	buildStamp = os.Getenv("BUILD_STAMP")
 	params = &runtimeParameters{
 		SourcePrefix: validatePrefix(os.Getenv("SOURCE_PREFIX"), DefaultSrcPrefix),
 		DestPrefix:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
@@ -198,54 +200,54 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 	for _, record := range snsEvent.Records {
 		message, err := parseMessage(record.SNS.Message)
 		if err != nil {
-			log.Printf("failed to parse the SNS message at all: %v", err)
+			log.Printf("[%s] failed to parse the SNS message at all: %v", buildStamp, err)
 			continue
 		}
 
 		// each SNS event record is an S3EventRecord
 		for _, event := range message.Records {
-			log.Printf("Received request for : object %s/%s", event.S3.Bucket.Name, event.S3.Object.Key)
+			log.Printf("[%s] Received request for : object %s/%s", buildStamp, event.S3.Bucket.Name, event.S3.Object.Key)
 			// only process events where the object key as the expected prefix and the event is an object creation
 			if strings.HasPrefix(event.S3.Object.Key, params.SourcePrefix) && strings.HasPrefix(event.EventName, "ObjectCreated:") {
 				decodedKey, err := url.QueryUnescape(event.S3.Object.Key)
 				if err != nil {
-					log.Printf("Failed to decode the key: '%s'", event.S3.Object.Key)
+					log.Printf("[%s] Failed to decode the key: '%s'", buildStamp, event.S3.Object.Key)
 					continue
 				}
 
 				// this should be a cannot-happen case
 				if event.AWSRegion != params.Region {
-					log.Printf("Event is not from the same region as the lambda: got %q, wanted %q", event.AWSRegion, params.Region)
+					log.Printf("[%s] Event is not from the same region as the lambda: got %q, wanted %q", buildStamp, event.AWSRegion, params.Region)
 					continue
 				}
 
 				// fetch the object and hand back an io.reader
 				imgReader, err := getImageReader(params.S3service, event.S3.Bucket.Name, decodedKey)
 				if err != nil {
-					log.Printf("Failed to get a reader to read from %s/%s: %v", event.S3.Bucket.Name, decodedKey, err)
+					log.Printf("[%s] Failed to get a reader to read from %s/%s: %v", buildStamp, event.S3.Bucket.Name, decodedKey, err)
 					continue
 				}
 
 				// extract the image data
 				imageBytes, err := getImage(imgReader)
 				if err != nil {
-					log.Printf("Failed to read image bytes: %v", err)
+					log.Printf("[%s] Failed to read image bytes: %v", buildStamp, err)
 					continue
 				}
 
 				// create a thumbnail from our image bytes, getting back a *byte[]
 				thumbBytes, err := resizeImage(imageBytes)
 				if err != nil {
-					log.Printf("failed to create a thumbnail image: %v", err)
+					log.Printf("[%s] failed to create a thumbnail image: %v", buildStamp, err)
 					continue
 				}
 
 				if err = saveThumbnail(params.S3service, thumbBytes, params.DestBucket, makeThumbKey(decodedKey)); err != nil {
-					log.Printf("failed to save the thumbnail: %v", err)
+					log.Printf("[%s] failed to save the thumbnail: %v", buildStamp, err)
 					continue
 				}
 
-				log.Printf("Processed request for : object %s/%s", event.S3.Bucket.Name, decodedKey)
+				log.Printf("[%s] Processed request for : object %s/%s", buildStamp, event.S3.Bucket.Name, decodedKey)
 				cnt++
 			}
 		}
@@ -266,6 +268,6 @@ func main() {
 	}
 	params.S3service = s3.New(sess)
 
-	log.Println("Registering handler for photo-thumbnail...")
+	log.Printf("[%s] Registering handler for photo-thumbnail...", buildStamp)
 	lambda.Start(HandleLambdaEvent)
 }
