@@ -89,7 +89,7 @@ func Test_validateDestination(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validateDestination(tt.args.dest); got != tt.want {
+			if got := validateDestination(tt.args.dest, DefaultBucket); got != tt.want {
 				t.Errorf("extractName() = %v, want %v", got, tt.want)
 			}
 		})
@@ -111,7 +111,7 @@ func Test_validateRegion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validateRegion(tt.args.region); got != tt.want {
+			if got := validateRegion(tt.args.region, DefaultRegion); got != tt.want {
 				t.Errorf("validateRegion() = %v, want %v", got, tt.want)
 			}
 		})
@@ -168,7 +168,7 @@ func Test_makeAWSSession(t *testing.T) {
 
 func Test_makeThumbKey(t *testing.T) {
 	key := "photos/2020/12/23/fred"
-	want := "thumbs/2020/12/23/fred"
+	want := "photos/thumbs/2020/12/23/fred"
 	if got := makeThumbKey(key); got != want {
 		t.Errorf("got: %q, want %q", got, want)
 	}

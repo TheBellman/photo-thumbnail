@@ -36,7 +36,7 @@ var buildStamp string
 
 const (
 	DefaultSrcPrefix  = "photos/"
-	DefaultDestPrefix = "thumbs/"
+	DefaultDestPrefix = "photos/thumbs/"
 	DefaultRegion     = "eu-west-2"
 	DefaultBucket     = "NOSUCHBUCKET"
 	JPEG              = "image/jpeg"
@@ -58,24 +58,24 @@ func init() {
 	params = &runtimeParameters{
 		SourcePrefix: validatePrefix(os.Getenv("SOURCE_PREFIX"), DefaultSrcPrefix),
 		DestPrefix:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
-		DestBucket:   validateDestination(os.Getenv("DESTINATION_BUCKET")),
-		Region:       validateRegion(os.Getenv("AWS_REGION")),
+		DestBucket:   validateDestination(os.Getenv("DESTINATION_BUCKET"), DefaultBucket),
+		Region:       validateRegion(os.Getenv("AWS_REGION"), DefaultRegion),
 	}
 }
 
 // validateDestination will ensure a non-blank destination bucket
-func validateDestination(bucket string) string {
+func validateDestination(bucket string, defaultBucket string) string {
 	if bucket == "" {
-		return DefaultBucket
+		return defaultBucket
 	} else {
 		return bucket
 	}
 }
 
 // validateRegion will provide the default region if no region is set
-func validateRegion(region string) string {
+func validateRegion(region string, defaultRegion string) string {
 	if region == "" {
-		return DefaultRegion
+		return defaultRegion
 	} else {
 		return region
 	}
