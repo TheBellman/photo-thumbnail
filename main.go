@@ -13,7 +13,6 @@ import (
 	"image"
 	"image/jpeg"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
@@ -40,7 +39,7 @@ const (
 	DefaultRegion     = "eu-west-2"
 	DefaultBucket     = "NOSUCHBUCKET"
 	JPEG              = "image/jpeg"
-	ThumbnailSize      = 200
+	ThumbnailSize     = 200
 )
 
 // runtimeParameters contains various bits needed during execution
@@ -103,7 +102,7 @@ func makeAWSSession(region string) (*session.Session, error) {
 }
 
 // getImageReader tries to get an io.Reader exposing the body of an image given the bucket and key. It will fail
-// if the provided object is not a JPEG
+// if the provided object is not a supported file type
 func getImageReader(service s3Service, bucket string, key string) (io.Reader, error) {
 	result, err := service.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(bucket),
@@ -113,16 +112,17 @@ func getImageReader(service s3Service, bucket string, key string) (io.Reader, er
 		return nil, fmt.Errorf("error fetching from s3: %v", err)
 	}
 
-	if *result.ContentType != JPEG {
-		return nil, fmt.Errorf("only JPEG supported, fetched file was reported as %s", *result.ContentType)
+	if strings.HasSuffix(strings.ToLower(key), ".cr3") || *result.ContentType == JPEG {
+		return result.Body, nil
 	}
-
-	return result.Body, nil
+	return nil, fmt.Errorf("only JPEG and CR3 supported, fetched file %s was reported as %s",
+		key,
+		*result.ContentType)
 }
 
 // getImage retrieves the byte contents of a specified reader
 func getImage(r io.Reader) (*[]byte, error) {
-	data, err := ioutil.ReadAll(r)
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return &[]byte{}, err
 	}
@@ -221,6 +221,11 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 					continue
 				}
 
+				if strings.HasSuffix(strings.ToLower(decodedKey), ".cr3") {
+					log.Printf("[%s] skipping %s until we can figure out how to handle RAW", buildStamp, decodedKey)
+					continue
+				}
+
 				// fetch the object and hand back an io.reader
 				imgReader, err := getImageReader(params.S3service, event.S3.Bucket.Name, decodedKey)
 				if err != nil {
@@ -255,9 +260,6 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 
 	return cnt, nil
 }
-
-
-
 
 // main function invoked when the lambda is launched
 func main() {

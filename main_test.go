@@ -5,7 +5,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"testing"
@@ -22,7 +21,7 @@ func testFileReader(name string) io.ReadCloser {
 }
 
 func testFile(name string) *[]byte {
-	data, err := ioutil.ReadAll(testFileReader(name))
+	data, err := io.ReadAll(testFileReader(name))
 	if err != nil {
 		log.Fatalf("Failed to read %s", name)
 	}
@@ -183,10 +182,9 @@ func Test_saveThumbnail(t *testing.T) {
 	}
 }
 
-
 func Test_parseMessage(t *testing.T) {
 
-	messageBody:=`{
+	messageBody := `{
   "Records": [
     {
       "eventVersion": "2.1",
