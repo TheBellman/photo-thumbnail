@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/adrium/goheif"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
@@ -133,6 +134,17 @@ func getImage(r io.Reader) (*[]byte, error) {
 	return &data, nil
 }
 
+func convertHeicToJpeg(reader io.Reader) (*[]byte, error) {
+	img, err := goheif.Decode(reader)
+	if err != nil {
+		return &[]byte{}, err
+	}
+	buff := new(bytes.Buffer)
+	err = jpeg.Encode(buff, img, nil)
+	data := buff.Bytes()
+	return &data, err
+}
+
 // resizeImage attempts to resize the supplied image (assuming the bytes represent a
 // jpeg) and hand back a new byte array representing the smaller jpeg
 func resizeImage(origImg *[]byte) (*[]byte, error) {
@@ -168,7 +180,11 @@ func resizeImage(origImg *[]byte) (*[]byte, error) {
 }
 
 // makeThumbKey should replace the old prefix on the key with the new thumbnail prefix
-func makeThumbKey(key string) string {
+func makeThumbKey(key string, contentType string) string {
+	if contentType == HEIC {
+		key = strings.Replace(key, ".HEIC", "_heic.jpg", 1)
+		key = strings.Replace(key, ".heic", "_heic.jpg", 1)
+	}
 	return strings.Replace(key, params.SourcePrefix, DefaultDestPrefix, 1)
 }
 
@@ -236,16 +252,22 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 					log.Printf("[%s] Failed to get a reader to read from %s/%s: %v", buildStamp, event.S3.Bucket.Name, decodedKey, err)
 					continue
 				}
-				log.Printf("content type -> %s", contentType)
 
-				// extract the image data
-				imageBytes, err := getImage(imgReader)
-				if err != nil {
-					log.Printf("[%s] Failed to read image bytes: %v", buildStamp, err)
-					continue
+				var imageBytes *[]byte
+				if contentType == HEIC {
+					imageBytes, err = convertHeicToJpeg(imgReader)
+					if err != nil {
+						log.Printf("[%s] Failed to convert HEIC to JPEG: %v", buildStamp, err)
+						continue
+					}
+				} else {
+					// extract the image data
+					imageBytes, err = getImage(imgReader)
+					if err != nil {
+						log.Printf("[%s] Failed to read image bytes: %v", buildStamp, err)
+						continue
+					}
 				}
-
-				// TODO: if the image is a HEIC, convert it to a JPEG
 
 				// create a thumbnail from our image bytes, getting back a *byte[]
 				thumbBytes, err := resizeImage(imageBytes)
@@ -254,7 +276,7 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 					continue
 				}
 
-				if err = saveThumbnail(params.S3service, thumbBytes, params.DestBucket, makeThumbKey(decodedKey)); err != nil {
+				if err = saveThumbnail(params.S3service, thumbBytes, params.DestBucket, makeThumbKey(decodedKey, contentType)); err != nil {
 					log.Printf("[%s] failed to save the thumbnail: %v", buildStamp, err)
 					continue
 				}

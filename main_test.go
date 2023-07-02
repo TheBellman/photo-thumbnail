@@ -40,7 +40,7 @@ func (f *mockS3) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error
 		}, nil
 	}
 
-	if *input.Key == "key/test.HEIC" {
+	if *input.Key == "./test.HEIC" {
 		return &s3.GetObjectOutput{
 			ContentType: aws.String("image/heic"),
 			Body:        testFileReader("./test.HEIC"),
@@ -154,6 +154,37 @@ func Test_getImage(t *testing.T) {
 	}
 }
 
+func Test_resizeHeic(t *testing.T) {
+	mock := mockS3{}
+	imgReader, contentType, err := getImageReader(&mock, "bucket", "./test.HEIC")
+	if err != nil {
+		t.Errorf("Received an unexpected error: %v", err)
+	}
+	if contentType != HEIC {
+		t.Errorf("Unexpected content type: %s", contentType)
+	}
+	if imgReader == nil {
+		t.Errorf("Somehow got an emptyh image reader")
+	}
+
+	imageBytes, err := convertHeicToJpeg(imgReader)
+	if err != nil {
+		t.Errorf("Received an unexpected error in conversion: %v", err)
+	}
+	if imageBytes == nil || len(*imageBytes) == 0 {
+		t.Error("did not receive an image when it was expected")
+	}
+
+	img, err := resizeImage(imageBytes)
+	if err != nil {
+		t.Errorf("failed to resize image: %v", err)
+	}
+
+	if img == nil || len(*img) == 0 {
+		t.Error("did not receive an image when it was expected")
+	}
+}
+
 func Test_resizeImage(t *testing.T) {
 	keys := []string{"./IMG_0348.jpeg", "./test.HEIC"}
 	for _, key := range keys {
@@ -185,9 +216,22 @@ func Test_makeAWSSession(t *testing.T) {
 func Test_makeThumbKey(t *testing.T) {
 	key := "photos/2020/12/23/fred"
 	want := "photos/thumbs/2020/12/23/fred"
-	if got := makeThumbKey(key); got != want {
+	if got := makeThumbKey(key, JPEG); got != want {
 		t.Errorf("got: %q, want %q", got, want)
 	}
+
+	key = "photos/2020/12/23/fred.heic"
+	want = "photos/thumbs/2020/12/23/fred_heic.jpg"
+	if got := makeThumbKey(key, HEIC); got != want {
+		t.Errorf("got: %q, want %q", got, want)
+	}
+
+	key = "photos/2020/12/23/fred.HEIC"
+	want = "photos/thumbs/2020/12/23/fred_heic.jpg"
+	if got := makeThumbKey(key, HEIC); got != want {
+		t.Errorf("got: %q, want %q", got, want)
+	}
+
 }
 
 func Test_saveThumbnail(t *testing.T) {
