@@ -40,6 +40,13 @@ func (f *mockS3) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error
 		}, nil
 	}
 
+	if *input.Key == "key/test.HEIC" {
+		return &s3.GetObjectOutput{
+			ContentType: aws.String("image/heic"),
+			Body:        testFileReader("./test.HEIC"),
+		}, nil
+	}
+
 	if *input.Key == "key/bad.jpeg" {
 		return &s3.GetObjectOutput{
 			ContentType: aws.String("text/plain"),
@@ -119,35 +126,45 @@ func Test_validateRegion(t *testing.T) {
 
 func Test_getImageReader(t *testing.T) {
 	mock := mockS3{}
-	_, err := getImageReader(&mock, "bucket", "key/good.jpeg")
+	_, contentType, err := getImageReader(&mock, "bucket", "key/good.jpeg")
 	if err != nil {
 		t.Errorf("Received an unexpected error: %v", err)
 	}
 
-	_, err = getImageReader(&mock, "bucket", "key/bad.jpeg")
+	if len(contentType) == 0 {
+		t.Errorf("Did not get a content type when expected")
+	}
+
+	_, _, err = getImageReader(&mock, "bucket", "key/bad.jpeg")
 	if err == nil {
 		t.Errorf("Did not get an error when expected")
 	}
 }
 
 func Test_getImage(t *testing.T) {
-	data, err := getImage(testFileReader("./test.jpeg"))
-	if err != nil {
-		t.Errorf("unexpected error loading file: %v", err)
-	}
-	if len(*data) == 0 {
-		t.Errorf("empty byte slice returned!")
+	keys := []string{"./test.jpeg", "./test.HEIC"}
+	for _, key := range keys {
+		data, err := getImage(testFileReader(key))
+		if err != nil {
+			t.Errorf("unexpected error loading file: %v", err)
+		}
+		if len(*data) == 0 {
+			t.Errorf("empty byte slice returned!")
+		}
 	}
 }
 
 func Test_resizeImage(t *testing.T) {
-	img, err := resizeImage(testFile("./IMG_0348.jpeg"))
-	if err != nil {
-		t.Errorf("failed to resize image: %v", err)
-	}
+	keys := []string{"./IMG_0348.jpeg", "./test.HEIC"}
+	for _, key := range keys {
+		img, err := resizeImage(testFile(key))
+		if err != nil {
+			t.Errorf("failed to resize image: %v", err)
+		}
 
-	if img == nil || len(*img) == 0 {
-		t.Error("did not receive an image when it was expected")
+		if img == nil || len(*img) == 0 {
+			t.Error("did not receive an image when it was expected")
+		}
 	}
 }
 

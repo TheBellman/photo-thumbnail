@@ -39,6 +39,7 @@ const (
 	DefaultRegion     = "eu-west-2"
 	DefaultBucket     = "NOSUCHBUCKET"
 	JPEG              = "image/jpeg"
+	HEIC              = "image/heic"
 	ThumbnailSize     = 200
 )
 
@@ -102,20 +103,23 @@ func makeAWSSession(region string) (*session.Session, error) {
 }
 
 // getImageReader tries to get an io.Reader exposing the body of an image given the bucket and key. It will fail
-// if the provided object is not a supported file type
-func getImageReader(service s3Service, bucket string, key string) (io.Reader, error) {
+// if the provided object is not a supported file type. It returns the reader along with the content type
+func getImageReader(service s3Service, bucket string, key string) (io.Reader, string, error) {
 	result, err := service.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("error fetching from s3: %v", err)
+		return nil, "", fmt.Errorf("error fetching from s3: %v", err)
 	}
 
-	if strings.HasSuffix(strings.ToLower(key), ".cr3") || *result.ContentType == JPEG {
-		return result.Body, nil
+	if strings.HasSuffix(strings.ToLower(key), ".cr3") ||
+		strings.HasSuffix(strings.ToLower(key), ".heic") ||
+		*result.ContentType == HEIC ||
+		*result.ContentType == JPEG {
+		return result.Body, *result.ContentType, nil
 	}
-	return nil, fmt.Errorf("only JPEG and CR3 supported, fetched file %s was reported as %s",
+	return nil, "", fmt.Errorf("only JPEG, CR3 and HEIC supported, fetched file %s was reported as %s",
 		key,
 		*result.ContentType)
 }
@@ -226,12 +230,13 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 					continue
 				}
 
-				// fetch the object and hand back an io.reader
-				imgReader, err := getImageReader(params.S3service, event.S3.Bucket.Name, decodedKey)
+				// fetch the object and hand back an io.reader and the content type
+				imgReader, contentType, err := getImageReader(params.S3service, event.S3.Bucket.Name, decodedKey)
 				if err != nil {
 					log.Printf("[%s] Failed to get a reader to read from %s/%s: %v", buildStamp, event.S3.Bucket.Name, decodedKey, err)
 					continue
 				}
+				log.Printf("content type -> %s", contentType)
 
 				// extract the image data
 				imageBytes, err := getImage(imgReader)
@@ -239,6 +244,8 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 					log.Printf("[%s] Failed to read image bytes: %v", buildStamp, err)
 					continue
 				}
+
+				// TODO: if the image is a HEIC, convert it to a JPEG
 
 				// create a thumbnail from our image bytes, getting back a *byte[]
 				thumbBytes, err := resizeImage(imageBytes)
