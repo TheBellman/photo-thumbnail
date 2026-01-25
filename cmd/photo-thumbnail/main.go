@@ -201,12 +201,12 @@ func resizeImage(origImg *[]byte) (*[]byte, error) {
 }
 
 // makeThumbKey should replace the old prefix on the key with the new thumbnail prefix
-func makeThumbKey(key string, contentType string) string {
+func makeThumbKey(key string, contentType string, sourcePrefix string, destPrefix string) string {
 	if contentType == HEIC {
 		key = strings.Replace(key, ".HEIC", "_heic.jpg", 1)
 		key = strings.Replace(key, ".heic", "_heic.jpg", 1)
 	}
-	return strings.Replace(key, app.Config.SourcePrefix, app.Config.DestPrefix, 1)
+	return strings.Replace(key, sourcePrefix, destPrefix, 1)
 }
 
 // saveThumbnail tries to save the supplied data to the desired bucket and key.
@@ -297,7 +297,7 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 					continue
 				}
 
-				if err = saveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, makeThumbKey(decodedKey, contentType)); err != nil {
+				if err = saveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, makeThumbKey(decodedKey, contentType, a.Config.SourcePrefix, a.Config.DestPrefix)); err != nil {
 					log.Printf("[%s] failed to save the thumbnail: %v", a.BuildStamp, err)
 					continue
 				}

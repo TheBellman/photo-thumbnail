@@ -6,30 +6,37 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-type mockS3 struct{}
+func repoRoot() string {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return ""
+	}
+	pkgDir := filepath.Dir(file)
+	return filepath.Dir(filepath.Dir(pkgDir))
+}
 
 func testFileReader(name string) io.ReadCloser {
-	f, err := os.Open(name)
+	root := repoRoot()
+	if root == "" {
+		log.Fatalf("Failed to locate repo root")
+	}
+	path := filepath.Join(root, "testdata", filepath.Base(name))
+	f, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("Failed to open %s", name)
+		log.Fatalf("Failed to open %s", path)
 	}
 	return f
 }
 
-func testFile(name string) *[]byte {
-	data, err := io.ReadAll(testFileReader(name))
-	if err != nil {
-		log.Fatalf("Failed to read %s", name)
-	}
-	return &data
-}
+type mockS3 struct{}
 
 func (f *mockS3) PutObject(ctx context.Context, input *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	return &s3.PutObjectOutput{}, nil
@@ -39,25 +46,33 @@ func (f *mockS3) GetObject(ctx context.Context, input *s3.GetObjectInput, optFns
 	if *input.Key == "key/good.jpeg" {
 		return &s3.GetObjectOutput{
 			ContentType: aws.String("image/jpeg"),
-			Body:        testFileReader("./test.jpeg"),
+			Body:        testFileReader("test.jpeg"),
 		}, nil
 	}
 
 	if *input.Key == "./test.HEIC" {
 		return &s3.GetObjectOutput{
 			ContentType: aws.String("image/heic"),
-			Body:        testFileReader("./test.HEIC"),
+			Body:        testFileReader("test.HEIC"),
 		}, nil
 	}
 
 	if *input.Key == "key/bad.jpeg" {
 		return &s3.GetObjectOutput{
 			ContentType: aws.String("text/plain"),
-			Body:        testFileReader("./test.jpeg"),
+			Body:        testFileReader("test.jpeg"),
 		}, nil
 	}
 
 	return nil, errors.New("unexpected test key provided")
+}
+
+func testFile(name string) *[]byte {
+	data, err := io.ReadAll(testFileReader(name))
+	if err != nil {
+		log.Fatalf("Failed to read %s", name)
+	}
+	return &data
 }
 
 func Test_validatePrefix(t *testing.T) {
@@ -204,39 +219,24 @@ func Test_resizeImage(t *testing.T) {
 	}
 }
 
-// This is not a good test. It will work locally because at least some
-// credential can be resolved, and will work on CodeBuild because there
-// will be something that resolves as well.
-func Test_makeAWSSession(t *testing.T) {
-	sess, err := makeAWSSession("eu-west-2")
-	if err != nil {
-		t.Errorf("failed to make a sesion: %v", err)
-	}
-
-	if sess == nil {
-		t.Error("did not get an image, but no error was thrown")
-	}
-}
-
 func Test_makeThumbKey(t *testing.T) {
 	key := "photos/2020/12/23/fred"
 	want := "photos/thumbs/2020/12/23/fred"
-	if got := makeThumbKey(key, JPEG); got != want {
+	if got := makeThumbKey(key, JPEG, DefaultSrcPrefix, DefaultDestPrefix); got != want {
 		t.Errorf("got: %q, want %q", got, want)
 	}
 
 	key = "photos/2020/12/23/fred.heic"
 	want = "photos/thumbs/2020/12/23/fred_heic.jpg"
-	if got := makeThumbKey(key, HEIC); got != want {
+	if got := makeThumbKey(key, HEIC, DefaultSrcPrefix, DefaultDestPrefix); got != want {
 		t.Errorf("got: %q, want %q", got, want)
 	}
 
 	key = "photos/2020/12/23/fred.HEIC"
 	want = "photos/thumbs/2020/12/23/fred_heic.jpg"
-	if got := makeThumbKey(key, HEIC); got != want {
+	if got := makeThumbKey(key, HEIC, DefaultSrcPrefix, DefaultDestPrefix); got != want {
 		t.Errorf("got: %q, want %q", got, want)
 	}
-
 }
 
 func Test_saveThumbnail(t *testing.T) {
