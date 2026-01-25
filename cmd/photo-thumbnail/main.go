@@ -8,7 +8,6 @@ import (
 	"image"
 	"image/jpeg"
 	"io"
-	"log"
 	"log/slog"
 	"net/url"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/adrium/goheif"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-lambda-go/lambdacontext"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -233,44 +233,53 @@ func parseMessage(messageBody string) (*snsMessage, error) {
 	return &message, nil
 }
 
+func findRequestId(ctx context.Context) string {
+	requestID := ""
+	if lc, ok := lambdacontext.FromContext(ctx); ok {
+		requestID = lc.AwsRequestID
+	}
+	return requestID
+}
+
 // HandleLambdaEvent takes care of processing the incoming S3 event. Only "ObjectCreated:*" events are processed, and only
 // for where the object key starts with the nominated prefix. The count of processed objects is returned
 func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (int, error) {
 	cnt := 0
+	logger := slog.With("build_stamp", a.BuildStamp, "request_id", findRequestId(ctx))
 	// each SNS event probably only has a single record in it, but you never know
 	for _, record := range snsEvent.Records {
 		message, err := parseMessage(record.SNS.Message)
 		if err != nil {
-			log.Printf("[%s] failed to parse the SNS message at all: %v", a.BuildStamp, err)
+			logger.Error("failed to parse SNS message", "error", err)
 			continue
 		}
 
 		// each SNS event record is an S3EventRecord
 		for _, event := range message.Records {
-			log.Printf("[%s] Received request for : object %s/%s", a.BuildStamp, event.S3.Bucket.Name, event.S3.Object.Key)
+			logger.Info("received request", "bucket", event.S3.Bucket.Name, "key", event.S3.Object.Key)
 			// only process events where the object key as the expected prefix and the event is an object creation
 			if strings.HasPrefix(event.S3.Object.Key, a.Config.SourcePrefix) && strings.HasPrefix(event.EventName, "ObjectCreated:") {
 				decodedKey, err := url.QueryUnescape(event.S3.Object.Key)
 				if err != nil {
-					log.Printf("[%s] Failed to decode the key: '%s'", a.BuildStamp, event.S3.Object.Key)
+					logger.Error("failed to decode key", "key", event.S3.Object.Key, "error", err)
 					continue
 				}
 
 				// this should be a cannot-happen case
 				if event.AWSRegion != a.Config.Region {
-					log.Printf("[%s] Event is not from the same region as the lambda: got %q, wanted %q", a.BuildStamp, event.AWSRegion, a.Config.Region)
+					logger.Warn("event from unexpected region", "event_region", event.AWSRegion, "lambda_region", a.Config.Region)
 					continue
 				}
 
 				if strings.HasSuffix(strings.ToLower(decodedKey), ".cr3") {
-					log.Printf("[%s] skipping %s until we can figure out how to handle RAW", a.BuildStamp, decodedKey)
+					logger.Info("skipping RAW file", "key", decodedKey)
 					continue
 				}
 
 				// fetch the object and hand back an io.reader and the content type
 				imgReader, contentType, err := getImageReader(ctx, a.S3, event.S3.Bucket.Name, decodedKey)
 				if err != nil {
-					log.Printf("[%s] Failed to get a reader to read from %s/%s: %v", a.BuildStamp, event.S3.Bucket.Name, decodedKey, err)
+					logger.Error("failed to get image reader", "bucket", event.S3.Bucket.Name, "key", decodedKey, "error", err)
 					continue
 				}
 
@@ -278,14 +287,14 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 				if contentType == HEIC {
 					imageBytes, err = convertHeicToJpeg(imgReader)
 					if err != nil {
-						log.Printf("[%s] Failed to convert HEIC to JPEG: %v", a.BuildStamp, err)
+						logger.Error("failed to convert HEIC to JPEG", "key", decodedKey, "error", err)
 						continue
 					}
 				} else {
 					// extract the image data
 					imageBytes, err = getImage(imgReader)
 					if err != nil {
-						log.Printf("[%s] Failed to read image bytes: %v", a.BuildStamp, err)
+						logger.Error("failed to read image bytes", "key", decodedKey, "error", err)
 						continue
 					}
 				}
@@ -293,16 +302,16 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 				// create a thumbnail from our image bytes, getting back a *byte[]
 				thumbBytes, err := resizeImage(imageBytes)
 				if err != nil {
-					log.Printf("[%s] failed to create a thumbnail image: %v", a.BuildStamp, err)
+					logger.Error("failed to create thumbnail image", "key", decodedKey, "error", err)
 					continue
 				}
 
 				if err = saveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, makeThumbKey(decodedKey, contentType, a.Config.SourcePrefix, a.Config.DestPrefix)); err != nil {
-					log.Printf("[%s] failed to save the thumbnail: %v", a.BuildStamp, err)
+					logger.Error("failed to save thumbnail", "bucket", a.Config.DestBucket, "key", decodedKey, "error", err)
 					continue
 				}
 
-				log.Printf("[%s] Processed request for : object %s/%s", a.BuildStamp, event.S3.Bucket.Name, decodedKey)
+				logger.Info("processed request", "bucket", event.S3.Bucket.Name, "key", decodedKey)
 				cnt++
 			}
 		}
