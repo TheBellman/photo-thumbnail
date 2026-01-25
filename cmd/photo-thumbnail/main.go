@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"io"
 	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -15,25 +17,14 @@ import (
 	"github.com/adrium/goheif"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/disintegration/imaging"
 )
 
-// s3Service helps with mocking access to S3
-type s3Service interface {
-	GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
-	PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
-}
-
-// encapsulates the message we get from SNS
-type snsMessage struct {
-	Records []events.S3EventRecord `json:"Records"`
-}
-
-var params *runtimeParameters
-var buildStamp string
+// Global variable to persist clients between warm starts
+var app *App
 
 const (
 	DefaultSrcPrefix  = "photos/"
@@ -45,42 +36,79 @@ const (
 	ThumbnailSize     = 200
 )
 
-// runtimeParameters contains various bits needed during execution
-type runtimeParameters struct {
-	Region       string
-	SourceBucket string
+// App holds our dependencies and configuration
+type App struct {
+	Config     RuntimeConfig
+	S3         *s3.Client
+	BuildStamp string
+}
+
+type RuntimeConfig struct {
 	SourcePrefix string
 	DestBucket   string
 	DestPrefix   string
-	S3service    *s3.S3
+	Region       string
 }
 
-func init() {
-	buildStamp = os.Getenv("BUILD_STAMP")
-	params = &runtimeParameters{
-		SourcePrefix: validatePrefix(os.Getenv("SOURCE_PREFIX"), DefaultSrcPrefix),
-		DestPrefix:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
-		DestBucket:   validateDestination(os.Getenv("DESTINATION_BUCKET"), DefaultBucket),
-		Region:       validateRegion(os.Getenv("AWS_REGION"), DefaultRegion),
+// s3API helps with mocking access to S3
+type s3API interface {
+	GetObject(ctx context.Context, input *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, input *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+}
+
+// encapsulates the message we get from SNS
+type snsMessage struct {
+	Records []events.S3EventRecord `json:"Records"`
+}
+
+// NewApp initializes the application dependencies including S3 and Wasabi clients.
+// It returns an error if the AWS SDK configuration cannot be loaded
+func NewApp(ctx context.Context) (*App, error) {
+	region := getEnv("AWS_REGION", DefaultRegion)
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("unable to load SDK config: %w", err)
 	}
+
+	app := &App{
+		BuildStamp: os.Getenv("BUILD_STAMP"),
+		Config: RuntimeConfig{
+			Region:       region,
+			SourcePrefix: validatePrefix(os.Getenv("SOURCE_PREFIX"), DefaultSrcPrefix),
+			DestBucket:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
+			DestPrefix:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
+		},
+		S3: s3.NewFromConfig(cfg),
+	}
+
+	return app, nil
+}
+
+// getEnv fetches an environmental variable from the lambda environment. If not found
+// it falls back on the provided fallback value.
+//
+// The variable value or the fallback string are returned.
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // validateDestination will ensure a non-blank destination bucket
 func validateDestination(bucket string, defaultBucket string) string {
 	if bucket == "" {
 		return defaultBucket
-	} else {
-		return bucket
 	}
+	return bucket
 }
 
 // validateRegion will provide the default region if no region is set
 func validateRegion(region string, defaultRegion string) string {
 	if region == "" {
 		return defaultRegion
-	} else {
-		return region
 	}
+	return region
 }
 
 // validatePrefix coerces the environmental variable into a usable prefix, by adding a "/" if necessary or setting it to
@@ -96,18 +124,10 @@ func validatePrefix(photoPrefix string, defaultPrefix string) string {
 	return photoPrefix
 }
 
-// makeAWSSession sets up an AWS session that can be used to connect to S3.
-func makeAWSSession(region string) (*session.Session, error) {
-	return session.NewSession(
-		&aws.Config{
-			Region: aws.String(region),
-		})
-}
-
 // getImageReader tries to get an io.Reader exposing the body of an image given the bucket and key. It will fail
 // if the provided object is not a supported file type. It returns the reader along with the content type
-func getImageReader(service s3Service, bucket string, key string) (io.Reader, string, error) {
-	result, err := service.GetObject(&s3.GetObjectInput{
+func getImageReader(ctx context.Context, service s3API, bucket string, key string) (io.Reader, string, error) {
+	result, err := service.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -186,13 +206,13 @@ func makeThumbKey(key string, contentType string) string {
 		key = strings.Replace(key, ".HEIC", "_heic.jpg", 1)
 		key = strings.Replace(key, ".heic", "_heic.jpg", 1)
 	}
-	return strings.Replace(key, params.SourcePrefix, DefaultDestPrefix, 1)
+	return strings.Replace(key, app.Config.SourcePrefix, app.Config.DestPrefix, 1)
 }
 
 // saveThumbnail tries to save the supplied data to the desired bucket and key.
-func saveThumbnail(service s3Service, data *[]byte, bucket string, key string) error {
+func saveThumbnail(ctx context.Context, service s3API, data *[]byte, bucket string, key string) error {
 	reader := bytes.NewReader(*data)
-	_, err := service.PutObject(&s3.PutObjectInput{
+	_, err := service.PutObject(ctx, &s3.PutObjectInput{
 		Body:          reader,
 		Bucket:        aws.String(bucket),
 		ContentLength: aws.Int64(int64(len(*data))),
@@ -215,42 +235,42 @@ func parseMessage(messageBody string) (*snsMessage, error) {
 
 // HandleLambdaEvent takes care of processing the incoming S3 event. Only "ObjectCreated:*" events are processed, and only
 // for where the object key starts with the nominated prefix. The count of processed objects is returned
-func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
+func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (int, error) {
 	cnt := 0
 	// each SNS event probably only has a single record in it, but you never know
 	for _, record := range snsEvent.Records {
 		message, err := parseMessage(record.SNS.Message)
 		if err != nil {
-			log.Printf("[%s] failed to parse the SNS message at all: %v", buildStamp, err)
+			log.Printf("[%s] failed to parse the SNS message at all: %v", a.BuildStamp, err)
 			continue
 		}
 
 		// each SNS event record is an S3EventRecord
 		for _, event := range message.Records {
-			log.Printf("[%s] Received request for : object %s/%s", buildStamp, event.S3.Bucket.Name, event.S3.Object.Key)
+			log.Printf("[%s] Received request for : object %s/%s", a.BuildStamp, event.S3.Bucket.Name, event.S3.Object.Key)
 			// only process events where the object key as the expected prefix and the event is an object creation
-			if strings.HasPrefix(event.S3.Object.Key, params.SourcePrefix) && strings.HasPrefix(event.EventName, "ObjectCreated:") {
+			if strings.HasPrefix(event.S3.Object.Key, a.Config.SourcePrefix) && strings.HasPrefix(event.EventName, "ObjectCreated:") {
 				decodedKey, err := url.QueryUnescape(event.S3.Object.Key)
 				if err != nil {
-					log.Printf("[%s] Failed to decode the key: '%s'", buildStamp, event.S3.Object.Key)
+					log.Printf("[%s] Failed to decode the key: '%s'", a.BuildStamp, event.S3.Object.Key)
 					continue
 				}
 
 				// this should be a cannot-happen case
-				if event.AWSRegion != params.Region {
-					log.Printf("[%s] Event is not from the same region as the lambda: got %q, wanted %q", buildStamp, event.AWSRegion, params.Region)
+				if event.AWSRegion != a.Config.Region {
+					log.Printf("[%s] Event is not from the same region as the lambda: got %q, wanted %q", a.BuildStamp, event.AWSRegion, a.Config.Region)
 					continue
 				}
 
 				if strings.HasSuffix(strings.ToLower(decodedKey), ".cr3") {
-					log.Printf("[%s] skipping %s until we can figure out how to handle RAW", buildStamp, decodedKey)
+					log.Printf("[%s] skipping %s until we can figure out how to handle RAW", a.BuildStamp, decodedKey)
 					continue
 				}
 
 				// fetch the object and hand back an io.reader and the content type
-				imgReader, contentType, err := getImageReader(params.S3service, event.S3.Bucket.Name, decodedKey)
+				imgReader, contentType, err := getImageReader(ctx, a.S3, event.S3.Bucket.Name, decodedKey)
 				if err != nil {
-					log.Printf("[%s] Failed to get a reader to read from %s/%s: %v", buildStamp, event.S3.Bucket.Name, decodedKey, err)
+					log.Printf("[%s] Failed to get a reader to read from %s/%s: %v", a.BuildStamp, event.S3.Bucket.Name, decodedKey, err)
 					continue
 				}
 
@@ -258,14 +278,14 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 				if contentType == HEIC {
 					imageBytes, err = convertHeicToJpeg(imgReader)
 					if err != nil {
-						log.Printf("[%s] Failed to convert HEIC to JPEG: %v", buildStamp, err)
+						log.Printf("[%s] Failed to convert HEIC to JPEG: %v", a.BuildStamp, err)
 						continue
 					}
 				} else {
 					// extract the image data
 					imageBytes, err = getImage(imgReader)
 					if err != nil {
-						log.Printf("[%s] Failed to read image bytes: %v", buildStamp, err)
+						log.Printf("[%s] Failed to read image bytes: %v", a.BuildStamp, err)
 						continue
 					}
 				}
@@ -273,16 +293,16 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 				// create a thumbnail from our image bytes, getting back a *byte[]
 				thumbBytes, err := resizeImage(imageBytes)
 				if err != nil {
-					log.Printf("[%s] failed to create a thumbnail image: %v", buildStamp, err)
+					log.Printf("[%s] failed to create a thumbnail image: %v", a.BuildStamp, err)
 					continue
 				}
 
-				if err = saveThumbnail(params.S3service, thumbBytes, params.DestBucket, makeThumbKey(decodedKey, contentType)); err != nil {
-					log.Printf("[%s] failed to save the thumbnail: %v", buildStamp, err)
+				if err = saveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, makeThumbKey(decodedKey, contentType)); err != nil {
+					log.Printf("[%s] failed to save the thumbnail: %v", a.BuildStamp, err)
 					continue
 				}
 
-				log.Printf("[%s] Processed request for : object %s/%s", buildStamp, event.S3.Bucket.Name, decodedKey)
+				log.Printf("[%s] Processed request for : object %s/%s", a.BuildStamp, event.S3.Bucket.Name, decodedKey)
 				cnt++
 			}
 		}
@@ -293,13 +313,17 @@ func HandleLambdaEvent(snsEvent events.SNSEvent) (int, error) {
 
 // main function invoked when the lambda is launched
 func main() {
-	// create a service to read from S3
-	sess, err := makeAWSSession(params.Region)
-	if err != nil {
-		log.Fatal("Error starting AWS session", err)
-	}
-	params.S3service = s3.New(sess)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
-	log.Printf("[%s] Registering handler for photo-thumbnail...", buildStamp)
-	lambda.Start(HandleLambdaEvent)
+	ctx := context.Background()
+	var err error
+	app, err = NewApp(ctx)
+	if err != nil {
+		slog.Error("Initialization failed", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("Starting photo-thumbnail handler", "build_stamp", app.BuildStamp)
+	lambda.Start(app.HandleLambdaEvent)
 }

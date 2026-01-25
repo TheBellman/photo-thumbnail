@@ -1,14 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
 	"os"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type mockS3 struct{}
@@ -29,11 +31,11 @@ func testFile(name string) *[]byte {
 	return &data
 }
 
-func (f *mockS3) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+func (f *mockS3) PutObject(ctx context.Context, input *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	return &s3.PutObjectOutput{}, nil
 }
 
-func (f *mockS3) GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+func (f *mockS3) GetObject(ctx context.Context, input *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	if *input.Key == "key/good.jpeg" {
 		return &s3.GetObjectOutput{
 			ContentType: aws.String("image/jpeg"),
@@ -127,7 +129,8 @@ func Test_validateRegion(t *testing.T) {
 
 func Test_getImageReader(t *testing.T) {
 	mock := mockS3{}
-	_, contentType, err := getImageReader(&mock, "bucket", "key/good.jpeg")
+	ctx := context.Background()
+	_, contentType, err := getImageReader(ctx, &mock, "bucket", "key/good.jpeg")
 	if err != nil {
 		t.Errorf("Received an unexpected error: %v", err)
 	}
@@ -136,7 +139,7 @@ func Test_getImageReader(t *testing.T) {
 		t.Errorf("Did not get a content type when expected")
 	}
 
-	_, _, err = getImageReader(&mock, "bucket", "key/bad.jpeg")
+	_, _, err = getImageReader(ctx, &mock, "bucket", "key/bad.jpeg")
 	if err == nil {
 		t.Errorf("Did not get an error when expected")
 	}
@@ -157,7 +160,8 @@ func Test_getImage(t *testing.T) {
 
 func Test_resizeHeic(t *testing.T) {
 	mock := mockS3{}
-	imgReader, contentType, err := getImageReader(&mock, "bucket", "./test.HEIC")
+	ctx := context.Background()
+	imgReader, contentType, err := getImageReader(ctx, &mock, "bucket", "./test.HEIC")
 	if err != nil {
 		t.Errorf("Received an unexpected error: %v", err)
 	}
@@ -238,7 +242,7 @@ func Test_makeThumbKey(t *testing.T) {
 func Test_saveThumbnail(t *testing.T) {
 	mock := mockS3{}
 
-	err := saveThumbnail(&mock, testFile("./IMG_0348.jpeg"), "bucket", "good")
+	err := saveThumbnail(context.Background(), &mock, testFile("./IMG_0348.jpeg"), "bucket", "good")
 	if err != nil {
 		t.Errorf("unexpected error : %v", err)
 	}

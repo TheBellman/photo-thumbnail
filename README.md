@@ -4,7 +4,7 @@ This code provides the copy-to-wasabi operation for the photo archive.
 
 ## Building
 
-Assuming go 1.20.5 or better is installed:
+Assuming go 1.25.0 or better is installed:
 
 ```
 % CGO_ENABLED=0 go test ./...
