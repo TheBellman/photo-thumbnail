@@ -4,13 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/adrium/goheif"
-	"github.com/aws/aws-lambda-go/events"
-	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/disintegration/imaging"
 	"image"
 	"image/jpeg"
 	"io"
@@ -18,6 +11,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/adrium/goheif"
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/disintegration/imaging"
 )
 
 // s3Service helps with mocking access to S3

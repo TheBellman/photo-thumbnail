@@ -1,19 +1,27 @@
-# photo-lambda
+# photo-wasabi
 
-This code provides the create-thumbnail operation for the photo archive.
+This code provides the copy-to-wasabi operation for the photo archive.
 
 ## Building
 
-Assuming go 1.15 or better is installed:
+Assuming go 1.20.5 or better is installed:
 
 ```
-% go test
-% go build
+% CGO_ENABLED=0 go test ./...
+% CGO_ENABLED=0 go build -o bootstrap ./cmd/photo-thumbnail
+```
+
+## Pre-Commit hook
+To use the pre-commit hook, first install pre-commit, then install the hook:
+
+```
+% brew install pre-commit
+% pre-commit install
 ```
 
 ## License
 
-Copyright 2020 Little Dog Digital
+Copyright 2026 6Little Dog Digital
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this
 file except in compliance with the License. You may obtain a copy of the License at

@@ -1,11 +1,11 @@
 module github.com/TheBellman/photo-thumbnail
 
-go 1.21
+go 1.25
 
 require (
 	github.com/adrium/goheif v0.0.0-20230113233934-ca402e77a786
-	github.com/aws/aws-lambda-go v1.42.0
-	github.com/aws/aws-sdk-go v1.49.3
+	github.com/aws/aws-lambda-go v1.52.0
+	github.com/aws/aws-sdk-go v1.55.8
 	github.com/disintegration/imaging v1.6.2
 )
 
