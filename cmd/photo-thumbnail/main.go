@@ -23,9 +23,6 @@ import (
 	"github.com/disintegration/imaging"
 )
 
-// Global variable to persist clients between warm starts
-var app *App
-
 const (
 	DefaultSrcPrefix  = "photos/"
 	DefaultDestPrefix = "photos/thumbs/"
@@ -95,22 +92,6 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-// validateDestination will ensure a non-blank destination bucket
-func validateDestination(bucket string, defaultBucket string) string {
-	if bucket == "" {
-		return defaultBucket
-	}
-	return bucket
-}
-
-// validateRegion will provide the default region if no region is set
-func validateRegion(region string, defaultRegion string) string {
-	if region == "" {
-		return defaultRegion
-	}
-	return region
-}
-
 // validatePrefix coerces the environmental variable into a usable prefix, by adding a "/" if necessary or setting it to
 // the default prefix. It returns the coerced prefix
 func validatePrefix(photoPrefix string, defaultPrefix string) string {
@@ -132,7 +113,7 @@ func getImageReader(ctx context.Context, service s3API, bucket string, key strin
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("error fetching from s3: %v", err)
+		return nil, "", fmt.Errorf("error fetching from s3: %w", err)
 	}
 
 	if strings.HasSuffix(strings.ToLower(key), ".cr3") ||
@@ -147,42 +128,40 @@ func getImageReader(ctx context.Context, service s3API, bucket string, key strin
 }
 
 // getImage retrieves the byte contents of a specified reader
-func getImage(r io.Reader) (*[]byte, error) {
+func getImage(r io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return &[]byte{}, err
+		return nil, err
 	}
-	return &data, nil
+	return data, nil
 }
 
-func convertHeicToJpeg(reader io.Reader) (*[]byte, error) {
+func convertHeicToJpeg(reader io.Reader) ([]byte, error) {
 	img, err := goheif.Decode(reader)
 	if err != nil {
-		return &[]byte{}, err
+		return nil, err
 	}
 	buff := new(bytes.Buffer)
 	err = jpeg.Encode(buff, img, nil)
-	data := buff.Bytes()
-	return &data, err
+	if err != nil {
+		return nil, err
+	}
+	return buff.Bytes(), nil
 }
 
 // resizeImage attempts to resize the supplied image (assuming the bytes represent a
 // jpeg) and hand back a new byte array representing the smaller jpeg
-func resizeImage(origImg *[]byte) (*[]byte, error) {
-	imgConf, _, err := image.DecodeConfig(bytes.NewReader(*origImg))
+func resizeImage(origImg []byte) ([]byte, error) {
+	original, _, err := image.Decode(bytes.NewReader(origImg))
 	if err != nil {
-		return &[]byte{}, fmt.Errorf("failed to decode byte stream as a jpeg: %v", err)
-	}
-
-	original, _, err := image.Decode(bytes.NewReader(*origImg))
-	if err != nil {
-		return &[]byte{}, fmt.Errorf("failed to decode byte stream as a jpeg: %v", err)
+		return nil, fmt.Errorf("failed to decode byte stream as a jpeg: %w", err)
 	}
 
 	// a new width/height of zero means "retain aspect ratio", so we only set one
 	newWidth := 0
 	newHeight := 0
-	if imgConf.Width > imgConf.Height {
+	bounds := original.Bounds()
+	if bounds.Dx() > bounds.Dy() {
 		newWidth = ThumbnailSize
 	} else {
 		newHeight = ThumbnailSize
@@ -193,29 +172,27 @@ func resizeImage(origImg *[]byte) (*[]byte, error) {
 	buf := new(bytes.Buffer)
 	err = jpeg.Encode(buf, newImage, nil)
 	if err != nil {
-		return &[]byte{}, fmt.Errorf("failed to encode resized image as jpeg: %v", err)
+		return nil, fmt.Errorf("failed to encode resized image as jpeg: %w", err)
 	}
 
-	result := buf.Bytes()
-	return &result, nil
+	return buf.Bytes(), nil
 }
 
 // makeThumbKey should replace the old prefix on the key with the new thumbnail prefix
 func makeThumbKey(key string, contentType string, sourcePrefix string, destPrefix string) string {
-	if contentType == HEIC {
-		key = strings.Replace(key, ".HEIC", "_heic.jpg", 1)
-		key = strings.Replace(key, ".heic", "_heic.jpg", 1)
+	if contentType == HEIC && strings.HasSuffix(strings.ToLower(key), ".heic") {
+		key = key[:len(key)-len(".heic")] + "_heic.jpg"
 	}
 	return strings.Replace(key, sourcePrefix, destPrefix, 1)
 }
 
 // saveThumbnail tries to save the supplied data to the desired bucket and key.
-func saveThumbnail(ctx context.Context, service s3API, data *[]byte, bucket string, key string) error {
-	reader := bytes.NewReader(*data)
+func saveThumbnail(ctx context.Context, service s3API, data []byte, bucket string, key string) error {
+	reader := bytes.NewReader(data)
 	_, err := service.PutObject(ctx, &s3.PutObjectInput{
 		Body:          reader,
 		Bucket:        aws.String(bucket),
-		ContentLength: aws.Int64(int64(len(*data))),
+		ContentLength: aws.Int64(int64(len(data))),
 		ContentType:   aws.String(JPEG),
 		Key:           aws.String(key),
 	})
@@ -228,7 +205,7 @@ func parseMessage(messageBody string) (*snsMessage, error) {
 	var message snsMessage
 	err := json.Unmarshal([]byte(messageBody), &message)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse the message body: %q = %v", messageBody, err)
+		return nil, fmt.Errorf("failed to parse the message body: %q = %w", messageBody, err)
 	}
 	return &message, nil
 }
@@ -283,7 +260,7 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 					continue
 				}
 
-				var imageBytes *[]byte
+				var imageBytes []byte
 				if contentType == HEIC {
 					imageBytes, err = convertHeicToJpeg(imgReader)
 					if err != nil {
@@ -299,7 +276,7 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 					}
 				}
 
-				// create a thumbnail from our image bytes, getting back a *byte[]
+				// create a thumbnail from our image bytes, getting back a []byte
 				thumbBytes, err := resizeImage(imageBytes)
 				if err != nil {
 					logger.Error("failed to create thumbnail image", "key", decodedKey, "error", err)
@@ -326,8 +303,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	ctx := context.Background()
-	var err error
-	app, err = NewApp(ctx)
+	app, err := NewApp(ctx)
 	if err != nil {
 		slog.Error("Initialization failed", "error", err)
 		os.Exit(1)
