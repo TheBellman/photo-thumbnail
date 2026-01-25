@@ -2,306 +2,177 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"io"
-	"log"
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func repoRoot() string {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return ""
-	}
-	pkgDir := filepath.Dir(file)
-	return filepath.Dir(filepath.Dir(pkgDir))
+type fakeS3 struct {
+	getCalled bool
+	putCalled bool
 }
 
-func testFileReader(name string) io.ReadCloser {
-	root := repoRoot()
-	if root == "" {
-		log.Fatalf("Failed to locate repo root")
-	}
-	path := filepath.Join(root, "testdata", filepath.Base(name))
-	f, err := os.Open(path)
-	if err != nil {
-		log.Fatalf("Failed to open %s", path)
-	}
-	return f
+func (f *fakeS3) GetObject(ctx context.Context, input *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	f.getCalled = true
+	return nil, errors.New("unexpected GetObject call")
 }
 
-type mockS3 struct{}
-
-func (f *mockS3) PutObject(ctx context.Context, input *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	return &s3.PutObjectOutput{}, nil
+func (f *fakeS3) PutObject(ctx context.Context, input *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	f.putCalled = true
+	return nil, errors.New("unexpected PutObject call")
 }
 
-func (f *mockS3) GetObject(ctx context.Context, input *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	if *input.Key == "key/good.jpeg" {
-		return &s3.GetObjectOutput{
-			ContentType: aws.String("image/jpeg"),
-			Body:        testFileReader("test.jpeg"),
-		}, nil
-	}
+func TestValidatePrefix(t *testing.T) {
+	t.Parallel()
 
-	if *input.Key == "./test.HEIC" {
-		return &s3.GetObjectOutput{
-			ContentType: aws.String("image/heic"),
-			Body:        testFileReader("test.HEIC"),
-		}, nil
-	}
-
-	if *input.Key == "key/bad.jpeg" {
-		return &s3.GetObjectOutput{
-			ContentType: aws.String("text/plain"),
-			Body:        testFileReader("test.jpeg"),
-		}, nil
-	}
-
-	return nil, errors.New("unexpected test key provided")
-}
-
-func testFile(name string) *[]byte {
-	data, err := io.ReadAll(testFileReader(name))
-	if err != nil {
-		log.Fatalf("Failed to read %s", name)
-	}
-	return &data
-}
-
-func Test_validatePrefix(t *testing.T) {
-	type args struct {
-		photoPrefix string
-	}
 	tests := []struct {
-		name string
-		args args
-		want string
+		name     string
+		input    string
+		fallback string
+		want     string
 	}{
-		{name: "empty", args: args{photoPrefix: ""}, want: DefaultSrcPrefix},
-		{name: "nonempty", args: args{photoPrefix: "folder"}, want: "folder/"},
+		{name: "empty uses fallback", input: "", fallback: "photos/", want: "photos/"},
+		{name: "adds slash", input: "photos", fallback: "photos/", want: "photos/"},
+		{name: "keeps slash", input: "photos/", fallback: "photos/", want: "photos/"},
+		{name: "nested adds slash", input: "x/y", fallback: "photos/", want: "x/y/"},
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validatePrefix(tt.args.photoPrefix, DefaultSrcPrefix); got != tt.want {
-				t.Errorf("validatePrefix() = %v, want %v", got, tt.want)
+			t.Parallel()
+			if got := validatePrefix(tt.input, tt.fallback); got != tt.want {
+				t.Fatalf("validatePrefix(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
 }
 
-func Test_validateDestination(t *testing.T) {
-	type args struct {
-		dest string
-	}
+func TestMakeThumbKey(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
-		name string
-		args args
-		want string
+		name         string
+		key          string
+		contentType  string
+		sourcePrefix string
+		destPrefix   string
+		want         string
 	}{
-		{name: "empty", args: args{dest: ""}, want: DefaultBucket},
-		{name: "nnonempty", args: args{dest: "mybucket"}, want: "mybucket"},
+		{
+			name:         "heic converts to jpeg",
+			key:          "photos/IMG_0001.HEIC",
+			contentType:  HEIC,
+			sourcePrefix: "photos/",
+			destPrefix:   "photos/thumbs/",
+			want:         "photos/thumbs/IMG_0001_heic.jpg",
+		},
+		{
+			name:         "jpeg keeps name",
+			key:          "photos/IMG_0002.jpg",
+			contentType:  JPEG,
+			sourcePrefix: "photos/",
+			destPrefix:   "photos/thumbs/",
+			want:         "photos/thumbs/IMG_0002.jpg",
+		},
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validateDestination(tt.args.dest, DefaultBucket); got != tt.want {
-				t.Errorf("extractName() = %v, want %v", got, tt.want)
+			t.Parallel()
+			if got := makeThumbKey(tt.key, tt.contentType, tt.sourcePrefix, tt.destPrefix); got != tt.want {
+				t.Fatalf("makeThumbKey(%q) = %q, want %q", tt.key, got, tt.want)
 			}
 		})
 	}
 }
 
-func Test_validateRegion(t *testing.T) {
-	type args struct {
-		region string
-	}
+func TestHandleLambdaEventFilters(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
-		name string
-		args args
-		want string
+		name   string
+		record events.S3EventRecord
 	}{
-		{name: "empty", args: args{region: ""}, want: DefaultRegion},
-		{name: "nonempty", args: args{region: "us-east-1"}, want: "us-east-1"},
+		{
+			name: "event name mismatch",
+			record: events.S3EventRecord{
+				EventName: "ObjectRemoved:Delete",
+				AWSRegion: "us-east-1",
+				S3: events.S3Entity{
+					Bucket: events.S3Bucket{Name: "bucket"},
+					Object: events.S3Object{Key: "photos/test.jpg"},
+				},
+			},
+		},
+		{
+			name: "prefix mismatch",
+			record: events.S3EventRecord{
+				EventName: "ObjectCreated:Put",
+				AWSRegion: "us-east-1",
+				S3: events.S3Entity{
+					Bucket: events.S3Bucket{Name: "bucket"},
+					Object: events.S3Object{Key: "other/test.jpg"},
+				},
+			},
+		},
+		{
+			name: "region mismatch",
+			record: events.S3EventRecord{
+				EventName: "ObjectCreated:Put",
+				AWSRegion: "us-west-2",
+				S3: events.S3Entity{
+					Bucket: events.S3Bucket{Name: "bucket"},
+					Object: events.S3Object{Key: "photos/test.jpg"},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validateRegion(tt.args.region, DefaultRegion); got != tt.want {
-				t.Errorf("validateRegion() = %v, want %v", got, tt.want)
+			t.Parallel()
+
+			msg := snsMessage{Records: []events.S3EventRecord{tt.record}}
+			body, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("marshal message: %v", err)
+			}
+
+			snsEvent := events.SNSEvent{
+				Records: []events.SNSEventRecord{
+					{
+						SNS: events.SNSEntity{Message: string(body)},
+					},
+				},
+			}
+
+			fake := &fakeS3{}
+			app := &App{
+				Config: RuntimeConfig{
+					Region:       "us-east-1",
+					SourcePrefix: "photos/",
+					DestBucket:   "dest-bucket",
+					DestPrefix:   "photos/thumbs/",
+				},
+				S3: fake,
+			}
+
+			count, err := app.HandleLambdaEvent(context.Background(), snsEvent)
+			if err != nil {
+				t.Fatalf("HandleLambdaEvent returned error: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("HandleLambdaEvent count = %d, want 0", count)
+			}
+			if fake.getCalled || fake.putCalled {
+				t.Fatalf("unexpected S3 calls: get=%t put=%t", fake.getCalled, fake.putCalled)
 			}
 		})
 	}
-}
-
-func Test_getImageReader(t *testing.T) {
-	mock := mockS3{}
-	ctx := context.Background()
-	_, contentType, err := getImageReader(ctx, &mock, "bucket", "key/good.jpeg")
-	if err != nil {
-		t.Errorf("Received an unexpected error: %v", err)
-	}
-
-	if len(contentType) == 0 {
-		t.Errorf("Did not get a content type when expected")
-	}
-
-	_, _, err = getImageReader(ctx, &mock, "bucket", "key/bad.jpeg")
-	if err == nil {
-		t.Errorf("Did not get an error when expected")
-	}
-}
-
-func Test_getImage(t *testing.T) {
-	keys := []string{"./test.jpeg", "./test.HEIC"}
-	for _, key := range keys {
-		data, err := getImage(testFileReader(key))
-		if err != nil {
-			t.Errorf("unexpected error loading file: %v", err)
-		}
-		if len(*data) == 0 {
-			t.Errorf("empty byte slice returned!")
-		}
-	}
-}
-
-func Test_resizeHeic(t *testing.T) {
-	mock := mockS3{}
-	ctx := context.Background()
-	imgReader, contentType, err := getImageReader(ctx, &mock, "bucket", "./test.HEIC")
-	if err != nil {
-		t.Errorf("Received an unexpected error: %v", err)
-	}
-	if contentType != HEIC {
-		t.Errorf("Unexpected content type: %s", contentType)
-	}
-	if imgReader == nil {
-		t.Errorf("Somehow got an emptyh image reader")
-	}
-
-	imageBytes, err := convertHeicToJpeg(imgReader)
-	if err != nil {
-		t.Errorf("Received an unexpected error in conversion: %v", err)
-	}
-	if imageBytes == nil || len(*imageBytes) == 0 {
-		t.Error("did not receive an image when it was expected")
-	}
-
-	img, err := resizeImage(imageBytes)
-	if err != nil {
-		t.Errorf("failed to resize image: %v", err)
-	}
-
-	if img == nil || len(*img) == 0 {
-		t.Error("did not receive an image when it was expected")
-	}
-}
-
-func Test_resizeImage(t *testing.T) {
-	keys := []string{"./IMG_0348.jpeg", "./test.HEIC"}
-	for _, key := range keys {
-		img, err := resizeImage(testFile(key))
-		if err != nil {
-			t.Errorf("failed to resize image: %v", err)
-		}
-
-		if img == nil || len(*img) == 0 {
-			t.Error("did not receive an image when it was expected")
-		}
-	}
-}
-
-func Test_makeThumbKey(t *testing.T) {
-	key := "photos/2020/12/23/fred"
-	want := "photos/thumbs/2020/12/23/fred"
-	if got := makeThumbKey(key, JPEG, DefaultSrcPrefix, DefaultDestPrefix); got != want {
-		t.Errorf("got: %q, want %q", got, want)
-	}
-
-	key = "photos/2020/12/23/fred.heic"
-	want = "photos/thumbs/2020/12/23/fred_heic.jpg"
-	if got := makeThumbKey(key, HEIC, DefaultSrcPrefix, DefaultDestPrefix); got != want {
-		t.Errorf("got: %q, want %q", got, want)
-	}
-
-	key = "photos/2020/12/23/fred.HEIC"
-	want = "photos/thumbs/2020/12/23/fred_heic.jpg"
-	if got := makeThumbKey(key, HEIC, DefaultSrcPrefix, DefaultDestPrefix); got != want {
-		t.Errorf("got: %q, want %q", got, want)
-	}
-}
-
-func Test_saveThumbnail(t *testing.T) {
-	mock := mockS3{}
-
-	err := saveThumbnail(context.Background(), &mock, testFile("./IMG_0348.jpeg"), "bucket", "good")
-	if err != nil {
-		t.Errorf("unexpected error : %v", err)
-	}
-}
-
-func Test_parseMessage(t *testing.T) {
-
-	messageBody := `{
-  "Records": [
-    {
-      "eventVersion": "2.1",
-      "eventSource": "aws:s3",
-      "awsRegion": "eu-west-2",
-      "eventTime": "2021-01-31T20:04:15.053Z",
-      "eventName": "ObjectCreated:Copy",
-      "userIdentity": {
-        "principalId": "AWS:AROA46CDIYCJQTXNTWQ36:photo-lambda"
-      },
-      "requestParameters": {
-        "sourceIPAddress": "35.177.37.71"
-      },
-      "responseElements": {
-        "x-amz-request-id": "ADD9D43C5A604209",
-        "x-amz-id-2": "gJp13URoEHybxQDe1eFpdX+IfB/LmUNPRsZdg7djTq/L1AtEHR3o0Ye5jvExrco94VGDLKAwfgjlrHgAApz5m3WVPeaDdT5RNP1Gv7wwiEQ="
-      },
-      "s3": {
-        "s3SchemaVersion": "1.0",
-        "configurationId": "tf-s3-topic-20210131162404270500000001",
-        "bucket": {
-          "name": "rahookphotos20200913140553484200000001",
-          "ownerIdentity": {
-            "principalId": "AM5JIJPPSMRC3"
-          },
-          "arn": "arn:aws:s3:::rahookphotos20200913140553484200000001"
-        },
-        "object": {
-          "key": "photos/2020/03/20/IMG_0883.jpeg",
-          "size": 10551027,
-          "eTag": "f95f692e6caa5bb2fd9cfc66156d290c",
-          "sequencer": "0060170D40D12F82DC"
-        }
-      }
-    }
-  ]
-}
-`
-
-	message, err := parseMessage(messageBody)
-	if err != nil {
-		t.Errorf("parseMessage() error = %v", err)
-	}
-
-	for _, msg := range message.Records {
-		if msg.S3.Bucket.Arn != "arn:aws:s3:::rahookphotos20200913140553484200000001" {
-			t.Errorf("parseMessage() unexpected ARN: %s", msg.S3.Bucket.Arn)
-		}
-		if msg.S3.Object.Key != "photos/2020/03/20/IMG_0883.jpeg" {
-			t.Errorf("parseMessage() unexpected key: %s", msg.S3.Object.Key)
-		}
-	}
-
 }

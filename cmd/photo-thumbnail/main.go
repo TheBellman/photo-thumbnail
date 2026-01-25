@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/adrium/goheif"
@@ -36,7 +37,7 @@ const (
 // App holds our dependencies and configuration
 type App struct {
 	Config     RuntimeConfig
-	S3         *s3.Client
+	S3         s3API
 	BuildStamp string
 }
 
@@ -72,7 +73,7 @@ func NewApp(ctx context.Context) (*App, error) {
 		Config: RuntimeConfig{
 			Region:       region,
 			SourcePrefix: validatePrefix(os.Getenv("SOURCE_PREFIX"), DefaultSrcPrefix),
-			DestBucket:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
+			DestBucket:   getEnv("DEST_BUCKET", DefaultBucket),
 			DestPrefix:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
 		},
 		S3: s3.NewFromConfig(cfg),
@@ -116,15 +117,27 @@ func getImageReader(ctx context.Context, service s3API, bucket string, key strin
 		return nil, "", fmt.Errorf("error fetching from s3: %w", err)
 	}
 
-	if strings.HasSuffix(strings.ToLower(key), ".cr3") ||
-		strings.HasSuffix(strings.ToLower(key), ".heic") ||
-		*result.ContentType == HEIC ||
-		*result.ContentType == JPEG {
-		return result.Body, *result.ContentType, nil
+	contentType := ""
+	if result.ContentType != nil {
+		contentType = *result.ContentType
+	}
+
+	ext := strings.ToLower(path.Ext(key))
+	if contentType == "" {
+		switch ext {
+		case ".heic":
+			contentType = HEIC
+		case ".jpg", ".jpeg":
+			contentType = JPEG
+		}
+	}
+
+	if ext == ".cr3" || ext == ".heic" || contentType == HEIC || contentType == JPEG {
+		return result.Body, contentType, nil
 	}
 	return nil, "", fmt.Errorf("only JPEG, CR3 and HEIC supported, fetched file %s was reported as %s",
 		key,
-		*result.ContentType)
+		contentType)
 }
 
 // getImage retrieves the byte contents of a specified reader
@@ -152,6 +165,15 @@ func convertHeicToJpeg(reader io.Reader) ([]byte, error) {
 // resizeImage attempts to resize the supplied image (assuming the bytes represent a
 // jpeg) and hand back a new byte array representing the smaller jpeg
 func resizeImage(origImg []byte) ([]byte, error) {
+	imgConf, _, err := image.DecodeConfig(bytes.NewReader(origImg))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode byte stream as a jpeg: %w", err)
+	}
+
+	if imgConf.Width <= ThumbnailSize && imgConf.Height <= ThumbnailSize {
+		return origImg, nil
+	}
+
 	original, _, err := image.Decode(bytes.NewReader(origImg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode byte stream as a jpeg: %w", err)
@@ -160,8 +182,7 @@ func resizeImage(origImg []byte) ([]byte, error) {
 	// a new width/height of zero means "retain aspect ratio", so we only set one
 	newWidth := 0
 	newHeight := 0
-	bounds := original.Bounds()
-	if bounds.Dx() > bounds.Dy() {
+	if imgConf.Width > imgConf.Height {
 		newWidth = ThumbnailSize
 	} else {
 		newHeight = ThumbnailSize
@@ -180,8 +201,8 @@ func resizeImage(origImg []byte) ([]byte, error) {
 
 // makeThumbKey should replace the old prefix on the key with the new thumbnail prefix
 func makeThumbKey(key string, contentType string, sourcePrefix string, destPrefix string) string {
-	if contentType == HEIC && strings.HasSuffix(strings.ToLower(key), ".heic") {
-		key = key[:len(key)-len(".heic")] + "_heic.jpg"
+	if contentType == HEIC && strings.EqualFold(path.Ext(key), ".heic") {
+		key = strings.TrimSuffix(key, path.Ext(key)) + "_heic.jpg"
 	}
 	return strings.Replace(key, sourcePrefix, destPrefix, 1)
 }
@@ -248,7 +269,7 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 					continue
 				}
 
-				if strings.HasSuffix(strings.ToLower(decodedKey), ".cr3") {
+				if strings.EqualFold(path.Ext(decodedKey), ".cr3") {
 					logger.Info("skipping RAW file", "key", decodedKey)
 					continue
 				}
