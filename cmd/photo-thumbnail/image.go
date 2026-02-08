@@ -7,8 +7,8 @@ import (
 	"image/jpeg"
 	"io"
 
-	"github.com/adrium/goheif"
 	"github.com/disintegration/imaging"
+	"github.com/gen2brain/heic"
 )
 
 // getImage retrieves the byte contents of a specified reader.
@@ -26,15 +26,17 @@ func getImage(r io.Reader) ([]byte, error) {
 //
 // Returns the converted image, or an error if something went wrong.
 func convertHeicToJpeg(reader io.Reader) ([]byte, error) {
-	img, err := goheif.Decode(reader)
+	img, err := heic.Decode(reader)
 	if err != nil {
 		return nil, err
 	}
+
 	buff := new(bytes.Buffer)
-	err = jpeg.Encode(buff, img, nil)
+	err = jpeg.Encode(buff, img, &jpeg.Options{Quality: 80})
 	if err != nil {
 		return nil, err
 	}
+
 	return buff.Bytes(), nil
 }
 
