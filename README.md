@@ -21,7 +21,7 @@ To use the pre-commit hook, first install pre-commit, then install the hook:
 
 ## License
 
-Copyright 2026 6Little Dog Digital
+Copyright 2026 Little Dog Digital
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this
 file except in compliance with the License. You may obtain a copy of the License at
