@@ -7,19 +7,18 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # This ensures your build environment matches the Lambda environment
+    container:
+      image: amazonlinux:2023
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Install HEIC dependencies
+      - name: Install HEIC Dependencies
+        # Amazon Linux uses 'dnf' instead of 'apt-get'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libde265-dev
+          dnf install -y golang-1.25 libde265-devel gcc
 
       - name: Run Tests
         env:
@@ -33,4 +32,5 @@ jobs:
           GOARCH: amd64
           GOOS: linux
           CGO_ENABLED: 1
-        run:  go build -o bootstrap ./cmd/photo-thumbnail
+#        run: go build -o bootstrap ./cmd/photo-thumbnail
+        run: go build -o bootstrap -ldflags '-extldflags "-static"' ./cmd/photo-thumbnail
