@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -87,7 +87,7 @@ func TestHandleLambdaEventFilters(t *testing.T) {
 			}
 
 			fake := &fakeS3{}
-			app := &App{
+			application := &App{
 				Config: RuntimeConfig{
 					Region:       "us-east-1",
 					SourcePrefix: "photos/",
@@ -97,7 +97,7 @@ func TestHandleLambdaEventFilters(t *testing.T) {
 				S3: fake,
 			}
 
-			count, err := app.HandleLambdaEvent(context.Background(), snsEvent)
+			count, err := application.HandleLambdaEvent(context.Background(), snsEvent)
 			if err != nil {
 				t.Fatalf("HandleLambdaEvent returned error: %v", err)
 			}

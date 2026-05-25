@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/TheBellman/photo-thumbnail/internal/storage"
 )
 
 const (
@@ -15,15 +17,13 @@ const (
 	DefaultDestPrefix = "photos/thumbs/"
 	DefaultRegion     = "eu-west-2"
 	DefaultBucket     = "NOSUCHBUCKET"
-	JPEG              = "image/jpeg"
-	HEIC              = "image/heic"
 	ThumbnailSize     = 200
 )
 
 // App holds our dependencies and configuration.
 type App struct {
 	Config     RuntimeConfig
-	S3         s3API
+	S3         storage.Client
 	BuildStamp string
 }
 
@@ -35,17 +35,17 @@ type RuntimeConfig struct {
 	Region       string
 }
 
-// NewApp initializes the application dependencies including S3 and Wasabi clients.
+// New initializes the application dependencies including the S3 client.
 //
 // It returns an error if the AWS SDK configuration cannot be loaded.
-func NewApp(ctx context.Context) (*App, error) {
+func New(ctx context.Context) (*App, error) {
 	region := getEnv("AWS_REGION", DefaultRegion)
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	app := &App{
+	return &App{
 		BuildStamp: os.Getenv("BUILD_STAMP"),
 		Config: RuntimeConfig{
 			Region:       region,
@@ -54,15 +54,11 @@ func NewApp(ctx context.Context) (*App, error) {
 			DestPrefix:   validatePrefix(os.Getenv("DEST_PREFIX"), DefaultDestPrefix),
 		},
 		S3: s3.NewFromConfig(cfg),
-	}
-
-	return app, nil
+	}, nil
 }
 
 // getEnv fetches an environmental variable from the lambda environment. If not found
 // it falls back on the provided fallback value.
-//
-// The variable value or the fallback string are returned.
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -72,8 +68,6 @@ func getEnv(key, fallback string) string {
 
 // validatePrefix coerces the environmental variable into a usable prefix, by adding a "/" if necessary or setting it to
 // the default prefix.
-//
-// It returns the coerced prefix.
 func validatePrefix(photoPrefix string, defaultPrefix string) string {
 	if !strings.HasSuffix(photoPrefix, "/") {
 		if photoPrefix == "" {
