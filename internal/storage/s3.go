@@ -49,13 +49,27 @@ func GetImageReader(ctx context.Context, service Client, bucket string, key stri
 		}
 	}
 
-	if ext == ".cr3" || ext == ".heic" || contentType == HEIC || contentType == JPEG {
+	if isSupportedImage(ext, contentType) {
 		return result.Body, contentType, nil
 	}
-
-	return nil, "", fmt.Errorf("only JPEG, CR3 and HEIC supported, fetched file %s was reported as %s",
+	return nil, "", fmt.Errorf("unsupported file type: fetched file %s was reported as %s",
 		key,
 		contentType)
+}
+
+// isSupportedImage returns true if the provided extension or content type is supported.
+func isSupportedImage(ext string, contentType string) bool {
+	switch ext {
+	case ".orf", ".cr3", ".heic":
+		return true
+	}
+
+	switch contentType {
+	case HEIC, JPEG:
+		return true
+	default:
+		return false
+	}
 }
 
 // SaveThumbnail tries to save the supplied data to the desired bucket and key.

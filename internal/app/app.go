@@ -2,14 +2,14 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/url"
-	"path"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
 
-	thumbnailimage "github.com/TheBellman/photo-thumbnail/internal/image"
+	"github.com/TheBellman/photo-thumbnail/internal/processing"
 	"github.com/TheBellman/photo-thumbnail/internal/storage"
 )
 
@@ -29,57 +29,17 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 		for _, event := range message.Records {
 			logger.Info("received request", "bucket", event.S3.Bucket.Name, "key", event.S3.Object.Key)
 
-			if !strings.HasPrefix(event.S3.Object.Key, a.Config.SourcePrefix) ||
-				!strings.HasPrefix(event.EventName, "ObjectCreated:") {
+			if !a.shouldProcessEvent(event) {
 				continue
 			}
 
-			decodedKey, err := url.QueryUnescape(event.S3.Object.Key)
-			if err != nil {
-				logger.Error("failed to decode key", "key", event.S3.Object.Key, "error", err)
+			decodedKey, ok := a.validateEvent(event, logger)
+			if !ok {
 				continue
 			}
 
-			if event.AWSRegion != a.Config.Region {
-				logger.Warn("event from unexpected region", "event_region", event.AWSRegion, "lambda_region", a.Config.Region)
-				continue
-			}
-
-			if strings.EqualFold(path.Ext(decodedKey), ".cr3") {
-				logger.Info("skipping RAW file", "key", decodedKey)
-				continue
-			}
-
-			imgReader, contentType, err := storage.GetImageReader(ctx, a.S3, event.S3.Bucket.Name, decodedKey)
-			if err != nil {
-				logger.Error("failed to get image reader", "bucket", event.S3.Bucket.Name, "key", decodedKey, "error", err)
-				continue
-			}
-
-			var imageBytes []byte
-			if contentType == storage.HEIC {
-				imageBytes, err = thumbnailimage.ConvertHEICToJPEG(imgReader)
-				if err != nil {
-					logger.Error("failed to convert HEIC to JPEG", "key", decodedKey, "error", err)
-					continue
-				}
-			} else {
-				imageBytes, err = thumbnailimage.Read(imgReader)
-				if err != nil {
-					logger.Error("failed to read image bytes", "key", decodedKey, "error", err)
-					continue
-				}
-			}
-
-			thumbBytes, err := thumbnailimage.Resize(imageBytes, ThumbnailSize)
-			if err != nil {
-				logger.Error("failed to create thumbnail image", "key", decodedKey, "error", err)
-				continue
-			}
-
-			thumbKey := makeThumbKey(decodedKey, contentType, a.Config.SourcePrefix, a.Config.DestPrefix)
-			if err = storage.SaveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, thumbKey); err != nil {
-				logger.Error("failed to save thumbnail", "bucket", a.Config.DestBucket, "key", decodedKey, "error", err)
+			if err := a.processImage(ctx, event.S3.Bucket.Name, decodedKey); err != nil {
+				logger.Error("failed to process image", "bucket", event.S3.Bucket.Name, "key", decodedKey, "error", err)
 				continue
 			}
 
@@ -89,4 +49,46 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 	}
 
 	return cnt, nil
+}
+
+// shouldProcessEvent determines if an S3 event should be processed based on the object's key prefix and event name.
+func (a *App) shouldProcessEvent(event events.S3EventRecord) bool {
+	return strings.HasPrefix(event.S3.Object.Key, a.Config.SourcePrefix) &&
+		strings.HasPrefix(event.EventName, "ObjectCreated:")
+}
+
+// validateEvent validates an S3 event by decoding its object key and verifying the AWS region matches the configuration.
+func (a *App) validateEvent(event events.S3EventRecord, logger *slog.Logger) (string, bool) {
+	decodedKey, err := url.QueryUnescape(event.S3.Object.Key)
+	if err != nil {
+		logger.Error("failed to decode key", "key", event.S3.Object.Key, "error", err)
+		return "", false
+	}
+
+	if event.AWSRegion != a.Config.Region {
+		logger.Warn("event from unexpected region", "event_region", event.AWSRegion, "lambda_region", a.Config.Region)
+		return "", false
+	}
+
+	return decodedKey, true
+}
+
+// processImage processes an image from the specified S3 bucket and key, generates a thumbnail, and saves it to the destination.
+func (a *App) processImage(ctx context.Context, bucket string, key string) error {
+	imgReader, contentType, err := storage.GetImageReader(ctx, a.S3, bucket, key)
+	if err != nil {
+		return fmt.Errorf("get image reader: %w", err)
+	}
+
+	thumbBytes, err := processing.CreateThumbnail(key, imgReader, contentType, ThumbnailSize)
+	if err != nil {
+		return err
+	}
+
+	thumbKey := makeThumbKey(key, contentType, a.Config.SourcePrefix, a.Config.DestPrefix)
+	if err = storage.SaveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, thumbKey); err != nil {
+		return fmt.Errorf("save thumbnail: %w", err)
+	}
+
+	return nil
 }

@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
 	github.com/disintegration/imaging v1.6.2
 	github.com/gen2brain/heic v0.4.9
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 )
 
 require (
@@ -30,5 +31,5 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/tetratelabs/wazero v1.11.0 // indirect
 	golang.org/x/image v0.41.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
 )

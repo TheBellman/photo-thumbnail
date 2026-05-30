@@ -1,9 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -25,45 +26,59 @@ func (f *fakeS3) PutObject(ctx context.Context, input *s3.PutObjectInput, optFns
 	return nil, errors.New("unexpected PutObject call")
 }
 
-func TestHandleLambdaEventFilters(t *testing.T) {
+func TestShouldProcessEvent(t *testing.T) {
 	t.Parallel()
 
+	application := &App{
+		Config: RuntimeConfig{
+			SourcePrefix: "photos/",
+		},
+	}
+
 	tests := []struct {
-		name   string
-		record events.S3EventRecord
+		name  string
+		event events.S3EventRecord
+		want  bool
 	}{
 		{
-			name: "event name mismatch",
-			record: events.S3EventRecord{
-				EventName: "ObjectRemoved:Delete",
-				AWSRegion: "us-east-1",
+			name: "object created with matching prefix",
+			event: events.S3EventRecord{
+				EventName: "ObjectCreated:Put",
 				S3: events.S3Entity{
-					Bucket: events.S3Bucket{Name: "bucket"},
 					Object: events.S3Object{Key: "photos/test.jpg"},
 				},
 			},
+			want: true,
+		},
+		{
+			name: "event name mismatch",
+			event: events.S3EventRecord{
+				EventName: "ObjectRemoved:Delete",
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "photos/test.jpg"},
+				},
+			},
+			want: false,
 		},
 		{
 			name: "prefix mismatch",
-			record: events.S3EventRecord{
+			event: events.S3EventRecord{
 				EventName: "ObjectCreated:Put",
-				AWSRegion: "us-east-1",
 				S3: events.S3Entity{
-					Bucket: events.S3Bucket{Name: "bucket"},
 					Object: events.S3Object{Key: "other/test.jpg"},
 				},
 			},
+			want: false,
 		},
 		{
-			name: "region mismatch",
-			record: events.S3EventRecord{
+			name: "case sensitive prefix mismatch",
+			event: events.S3EventRecord{
 				EventName: "ObjectCreated:Put",
-				AWSRegion: "us-west-2",
 				S3: events.S3Entity{
-					Bucket: events.S3Bucket{Name: "bucket"},
-					Object: events.S3Object{Key: "photos/test.jpg"},
+					Object: events.S3Object{Key: "Photos/test.jpg"},
 				},
 			},
+			want: false,
 		},
 	}
 
@@ -72,40 +87,97 @@ func TestHandleLambdaEventFilters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			msg := snsMessage{Records: []events.S3EventRecord{tt.record}}
-			body, err := json.Marshal(msg)
-			if err != nil {
-				t.Fatalf("marshal message: %v", err)
+			if got := application.shouldProcessEvent(tt.event); got != tt.want {
+				t.Fatalf("shouldProcessEvent() = %t, want %t", got, tt.want)
 			}
+		})
+	}
+}
 
-			snsEvent := events.SNSEvent{
-				Records: []events.SNSEventRecord{
-					{
-						SNS: events.SNSEntity{Message: string(body)},
-					},
+func TestValidateEvent(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	application := &App{
+		Config: RuntimeConfig{
+			Region: "eu-west-2",
+		},
+	}
+
+	tests := []struct {
+		name    string
+		event   events.S3EventRecord
+		wantKey string
+		wantOK  bool
+	}{
+		{
+			name: "valid event decodes key",
+			event: events.S3EventRecord{
+				AWSRegion: "eu-west-2",
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "photos/My+Photo.jpg"},
 				},
-			}
-
-			fake := &fakeS3{}
-			application := &App{
-				Config: RuntimeConfig{
-					Region:       "us-east-1",
-					SourcePrefix: "photos/",
-					DestBucket:   "dest-bucket",
-					DestPrefix:   "photos/thumbs/",
+			},
+			wantKey: "photos/My Photo.jpg",
+			wantOK:  true,
+		},
+		{
+			name: "region mismatch",
+			event: events.S3EventRecord{
+				AWSRegion: "us-east-1",
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "photos/test.jpg"},
 				},
-				S3: fake,
-			}
+			},
+			wantKey: "",
+			wantOK:  false,
+		},
+		{
+			name: "invalid escaped key",
+			event: events.S3EventRecord{
+				AWSRegion: "eu-west-2",
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "photos/%zz.jpg"},
+				},
+			},
+			wantKey: "",
+			wantOK:  false,
+		},
+		{
+			name: "cr3 is valid",
+			event: events.S3EventRecord{
+				AWSRegion: "eu-west-2",
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "photos/test.CR3"},
+				},
+			},
+			wantKey: "photos/test.CR3",
+			wantOK:  true,
+		},
+		{
+			name: "orf is valid",
+			event: events.S3EventRecord{
+				AWSRegion: "eu-west-2",
+				S3: events.S3Entity{
+					Object: events.S3Object{Key: "photos/test.ORF"},
+				},
+			},
+			wantKey: "photos/test.ORF",
+			wantOK:  true,
+		},
+	}
 
-			count, err := application.HandleLambdaEvent(context.Background(), snsEvent)
-			if err != nil {
-				t.Fatalf("HandleLambdaEvent returned error: %v", err)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotKey, gotOK := application.validateEvent(tt.event, logger)
+			if gotOK != tt.wantOK {
+				t.Fatalf("validateEvent() ok = %t, want %t", gotOK, tt.wantOK)
 			}
-			if count != 0 {
-				t.Fatalf("HandleLambdaEvent count = %d, want 0", count)
-			}
-			if fake.getCalled || fake.putCalled {
-				t.Fatalf("unexpected S3 calls: get=%t put=%t", fake.getCalled, fake.putCalled)
+			if gotKey != tt.wantKey {
+				t.Fatalf("validateEvent() key = %q, want %q", gotKey, tt.wantKey)
 			}
 		})
 	}
