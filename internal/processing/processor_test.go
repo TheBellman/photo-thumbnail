@@ -58,8 +58,20 @@ func TestExtractOrfThumbnail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractORFThumbnail() error: %v", err)
 	}
-	if len(result) == 0 {
-		t.Fatalf("extractORFThumbnail() = empty")
+
+	want := testFile("test_orf_thumb.jpg")
+
+	if !bytes.Equal(result, want) {
+		t.Errorf("extractORFThumbnail() = %d bytes, want %d bytes", len(result), len(want))
+		// Help narrow down where the mismatch is.
+		if len(result) == len(want) {
+			for i := range result {
+				if result[i] != want[i] {
+					t.Errorf("first difference at byte %d: got 0x%02X, want 0x%02X", i, result[i], want[i])
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -229,119 +241,6 @@ func TestReadImageBytesReadError(t *testing.T) {
 	_, err := readImageBytes(errReader{}, storage.JPEG)
 	if err == nil {
 		t.Fatalf("expected error")
-	}
-}
-
-func TestPatchORFHeader(t *testing.T) {
-	orfData := testFile("test.ORF") // real ORF bytes, expected to start with IIRO
-
-	// Build a synthetic ORF header + dummy payload for cases that don't need a real file.
-	makeORF := func(b0, b1, b2, b3 byte) []byte {
-		buf := make([]byte, 16)
-		buf[0], buf[1], buf[2], buf[3] = b0, b1, b2, b3
-		return buf
-	}
-
-	tests := []struct {
-		name        string
-		input       []byte
-		wantBytes   []byte // expected first 4 bytes after patch; nil means check not applied
-		wantPatched bool   // true if bytes 2-3 should have changed
-	}{
-		{
-			name:        "real ORF file gets header patched",
-			input:       orfData,
-			wantBytes:   []byte{0x49, 0x49, 0x2A, 0x00},
-			wantPatched: true,
-		},
-		{
-			name:        "synthetic IIRO header gets patched",
-			input:       makeORF(0x49, 0x49, 0x52, 0x4F),
-			wantBytes:   []byte{0x49, 0x49, 0x2A, 0x00},
-			wantPatched: true,
-		},
-		{
-			name:        "standard little-endian TIFF passthrough",
-			input:       makeORF(0x49, 0x49, 0x2A, 0x00),
-			wantBytes:   []byte{0x49, 0x49, 0x2A, 0x00},
-			wantPatched: false,
-		},
-		{
-			name:        "big-endian TIFF passthrough",
-			input:       makeORF(0x4D, 0x4D, 0x00, 0x2A),
-			wantBytes:   []byte{0x4D, 0x4D, 0x00, 0x2A},
-			wantPatched: false,
-		},
-		{
-			name:        "unrecognised header passthrough",
-			input:       makeORF(0xDE, 0xAD, 0xBE, 0xEF),
-			wantBytes:   []byte{0xDE, 0xAD, 0xBE, 0xEF},
-			wantPatched: false,
-		},
-		{
-			name:        "too short returns input unchanged",
-			input:       []byte{0x49, 0x49},
-			wantBytes:   []byte{0x49, 0x49},
-			wantPatched: false,
-		},
-		{
-			name:        "nil input returns nil",
-			input:       nil,
-			wantBytes:   nil,
-			wantPatched: false,
-		},
-		{
-			name:        "original slice is not mutated",
-			input:       makeORF(0x49, 0x49, 0x52, 0x4F),
-			wantBytes:   []byte{0x49, 0x49, 0x2A, 0x00},
-			wantPatched: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Capture original header bytes before calling, to detect mutation.
-			var originalHeader []byte
-			if len(tt.input) >= 4 {
-				originalHeader = []byte{tt.input[0], tt.input[1], tt.input[2], tt.input[3]}
-			}
-
-			result := patchORFHeader(tt.input)
-
-			// Check expected first 4 bytes.
-			if tt.wantBytes != nil {
-				if len(result) < len(tt.wantBytes) {
-					t.Fatalf("result too short: got %d bytes, want at least %d", len(result), len(tt.wantBytes))
-				}
-				if !bytes.Equal(result[:len(tt.wantBytes)], tt.wantBytes) {
-					t.Errorf("header bytes: got % X, want % X", result[:len(tt.wantBytes)], tt.wantBytes)
-				}
-			}
-
-			// Check that the output length matches the input length.
-			if len(result) != len(tt.input) {
-				t.Errorf("length changed: got %d, want %d", len(result), len(tt.input))
-			}
-
-			// Check the original slice was not mutated.
-			if originalHeader != nil && !bytes.Equal(tt.input[:4], originalHeader) {
-				t.Errorf("input slice was mutated: original % X, now % X", originalHeader, tt.input[:4])
-			}
-
-			// When a patch is expected, result must be a distinct allocation.
-			if tt.wantPatched && len(tt.input) >= 4 {
-				if &result[0] == &tt.input[0] {
-					t.Error("expected a new allocation for patched result, but got same backing array")
-				}
-			}
-
-			// When no patch is needed, result should be the same slice (no alloc).
-			if !tt.wantPatched && tt.input != nil && len(tt.input) >= 4 {
-				if &result[0] != &tt.input[0] {
-					t.Error("expected passthrough (same backing array) for unmodified input, but got a copy")
-				}
-			}
-		})
 	}
 }
 

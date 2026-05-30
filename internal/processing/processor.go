@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"path"
 	"strings"
 
 	thumbnailimage "github.com/TheBellman/photo-thumbnail/internal/image"
 	"github.com/TheBellman/photo-thumbnail/internal/storage"
-	"github.com/rwcarlsen/goexif/exif"
 )
 
 // CreateThumbnail generates a thumbnail for the given image based on its file extension and content type.
@@ -65,74 +63,25 @@ func processORFImage(imgReader io.Reader) ([]byte, error) {
 
 // extractORFThumbnail extracts the thumbnail from the given ORF image.
 func extractORFThumbnail(data []byte) ([]byte, error) {
-	// ORF files use the magic bytes 'IIRO' (49 49 52 4F) rather than the
-	// standard little-endian TIFF marker 'II*\x00' (49 49 2A 00).
-	// The goexif library rejects anything that doesn't match the TIFF spec,
-	// so we patch a copy of the header before decoding.
-	patched := patchORFHeader(data)
-
-	debugORFTags(data)
-
-	x, err := exif.Decode(bytes.NewReader(patched))
-	if err != nil {
-		return nil, fmt.Errorf("ORF: failed to decode EXIF: %w", err)
+	// The thumbnail is embedded in the Olympus MakerNote which dsoprea/go-exif
+	// does not parse. Instead we scan for the JPEG SOI marker (FF D8 FF) and
+	// extract the contiguous JPEG blob directly from the raw ORF bytes.
+	soi := []byte{0xFF, 0xD8, 0xFF}
+	start := bytes.Index(data, soi)
+	if start == -1 {
+		return nil, fmt.Errorf("ORF: no JPEG SOI marker found")
 	}
 
-	// Olympus stores the thumbnail as a raw blob in ThumbnailImage (0x0501)
-	// rather than via the standard JPEGInterchangeFormat pointer in IFD1,
-	// so JpegThumbnail() won't find it.
-	tag, err := x.Get("ThumbnailImage")
-	if err != nil {
-		return nil, fmt.Errorf("ORF: no thumbnail tag: %w", err)
+	// Find the EOI marker (FF D9) that closes the JPEG.
+	eoi := []byte{0xFF, 0xD9}
+	end := bytes.Index(data[start:], eoi)
+	if end == -1 {
+		return nil, fmt.Errorf("ORF: no JPEG EOI marker found")
 	}
-
-	// The tag value is the raw JPEG bytes — strip the enclosing quotes that
-	// tiff.Tag.String() would add; Val gives us the underlying []byte directly.
-	thumb := tag.Val
-	if len(thumb) == 0 {
-		return nil, fmt.Errorf("ORF: thumbnail tag is empty")
-	}
-
-	// Sanity check: verify it's actually a JPEG (SOI marker FF D8).
-	if len(thumb) < 2 || thumb[0] != 0xFF || thumb[1] != 0xD8 {
-		return nil, fmt.Errorf("ORF: thumbnail does not look like a JPEG (got % X)", thumb[:min(4, len(thumb))])
-	}
+	// end is relative to start, and we want to include the 2 EOI bytes.
+	thumb := data[start : start+end+2]
 
 	return thumb, nil
-}
-
-func debugORFTags(data []byte) {
-	patched := patchORFHeader(data)
-	x, err := exif.Decode(bytes.NewReader(patched))
-	if err != nil {
-		log.Fatalf("decode: %v", err)
-	}
-
-	// MarshalJSON encodes all decoded tags — just print it raw
-	b, err := x.MarshalJSON()
-	if err != nil {
-		log.Fatalf("json: %v", err)
-	}
-	fmt.Println(string(b))
-}
-
-// patchORFHeader returns a shallow copy of data with the ORF-specific TIFF
-// magic bytes replaced by the standard little-endian TIFF marker.
-// It only copies the first 4 bytes; the rest is shared to avoid allocating
-// a full duplicate of potentially large raw files.
-func patchORFHeader(data []byte) []byte {
-	if len(data) < 4 {
-		return data
-	}
-	// Confirm this actually looks like an ORF header before touching it.
-	if data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x52 && data[3] == 0x4F {
-		patched := make([]byte, len(data))
-		copy(patched, data)
-		patched[2] = 0x2A // '*'
-		patched[3] = 0x00
-		return patched
-	}
-	return data
 }
 
 // isCR3 checks for the ISOBMFF ftyp box with Canon's 'crx ' brand.
