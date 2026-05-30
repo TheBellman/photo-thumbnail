@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/TheBellman/photo-thumbnail/internal/storage"
@@ -158,19 +157,16 @@ func TestCreateThumbnailRoutesRawFormats(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		key     string
-		wantErr string
+		name string
+		key  string
 	}{
 		{
-			name:    "routes cr3",
-			key:     "photos/test.CR3",
-			wantErr: "CR3 image processing is not implemented",
+			name: "routes cr3",
+			key:  "test.CR3",
 		},
 		{
-			name:    "routes orf",
-			key:     "photos/test.ORF",
-			wantErr: "ORF image processing is not implemented",
+			name: "routes orf",
+			key:  "test.ORF",
 		},
 	}
 
@@ -179,12 +175,12 @@ func TestCreateThumbnailRoutesRawFormats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := CreateThumbnail(tt.key, strings.NewReader("raw image bytes"), "", thumbnailSize)
-			if err == nil {
-				t.Fatalf("expected error")
+			thumbData, err := CreateThumbnail(tt.key, mustOpenFile(tt.key), "", thumbnailSize)
+			if err != nil {
+				t.Fatalf("CreateThumbnail() error: %v", err)
 			}
-			if err.Error() != tt.wantErr {
-				t.Fatalf("CreateThumbnail() error = %q, want %q", err.Error(), tt.wantErr)
+			if len(thumbData) == 0 {
+				t.Fatalf("CreateThumbnail() = empty")
 			}
 		})
 	}

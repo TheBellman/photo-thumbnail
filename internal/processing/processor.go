@@ -58,7 +58,8 @@ func processORFImage(imgReader io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("invalid ORF image")
 	}
 
-	return nil, fmt.Errorf("ORF image processing is not implemented")
+	thumb, err := extractORFThumbnail(data)
+	return thumb, err
 }
 
 // extractORFThumbnail extracts the thumbnail from the given ORF image.
