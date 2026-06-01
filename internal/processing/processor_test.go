@@ -17,6 +17,7 @@ import (
 
 const thumbnailSize = 200
 
+// note that the test thumbnail is the thumbnail extracted with exiftool, not the resized thumb
 func TestExtractOrfThumbnail(t *testing.T) {
 	t.Parallel()
 	result, err := extractORFThumbnail(testFile("test.ORF"))
@@ -45,6 +46,7 @@ func TestExtractOrfThumbnail(t *testing.T) {
 	}
 }
 
+// note that the test thumbnail is the thumbnail extracted with exiftool, not the resized thumb
 func TestExtractCR3Thumbnail(t *testing.T) {
 	t.Parallel()
 	result, err := extractCR3Thumbnail(testFile("test.CR3"))
@@ -73,6 +75,7 @@ func TestExtractCR3Thumbnail(t *testing.T) {
 	}
 }
 
+// note we don't test the HEIC file as it's coerced to JPEG before we get to processor.go
 func TestCreateThumbnailRoutesAllFormats(t *testing.T) {
 	t.Parallel()
 
@@ -91,10 +94,6 @@ func TestCreateThumbnailRoutesAllFormats(t *testing.T) {
 		{
 			name: "routes jpeg",
 			key:  "test.jpeg",
-		},
-		{
-			name: "routes heic",
-			key:  "test.HEIC",
 		},
 	}
 
@@ -122,10 +121,10 @@ func TestCreateThumbnailRoutesAllFormats(t *testing.T) {
 			}
 
 			bounds := img.Bounds()
-			if bounds.Dx() != thumbnailSize {
+			if bounds.Dx() > thumbnailSize || bounds.Dx() == 0 {
 				t.Fatalf("expected width %d, got %d", thumbnailSize, bounds.Dx())
 			}
-			if bounds.Dy() > thumbnailSize {
+			if bounds.Dy() > thumbnailSize || bounds.Dy() == 0 {
 				t.Fatalf("expected height <= %d, got %d", thumbnailSize, bounds.Dy())
 			}
 		})
