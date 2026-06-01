@@ -73,7 +73,7 @@ func TestExtractCR3Thumbnail(t *testing.T) {
 	}
 }
 
-func TestCreateThumbnailRoutesRawFormats(t *testing.T) {
+func TestCreateThumbnailRoutesAllFormats(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -87,6 +87,14 @@ func TestCreateThumbnailRoutesRawFormats(t *testing.T) {
 		{
 			name: "routes orf",
 			key:  "test.ORF",
+		},
+		{
+			name: "routes jpeg",
+			key:  "test.jpeg",
+		},
+		{
+			name: "routes heic",
+			key:  "test.HEIC",
 		},
 	}
 
@@ -107,6 +115,19 @@ func TestCreateThumbnailRoutesRawFormats(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateThumbnail() error: %v", err)
 			}
+
+			img, _, err := image.Decode(bytes.NewReader(thumbData))
+			if err != nil {
+				t.Fatalf("decode thumbnail: %v", err)
+			}
+
+			bounds := img.Bounds()
+			if bounds.Dx() != thumbnailSize {
+				t.Fatalf("expected width %d, got %d", thumbnailSize, bounds.Dx())
+			}
+			if bounds.Dy() > thumbnailSize {
+				t.Fatalf("expected height <= %d, got %d", thumbnailSize, bounds.Dy())
+			}
 		})
 	}
 }
@@ -115,29 +136,22 @@ func TestProcessStandardImage(t *testing.T) {
 	t.Parallel()
 
 	orig := makeProcessorTestJPEGBytes(t, thumbnailSize*2, thumbnailSize)
-	thumb, err := processStandardImage(bytes.NewReader(orig), storage.JPEG, thumbnailSize)
+	thumbData, err := processJpegImage(bytes.NewReader(orig), storage.JPEG)
 	if err != nil {
 		t.Fatalf("processStandardImage() error: %v", err)
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(thumb))
+	err = validateJPEG(thumbData)
 	if err != nil {
-		t.Fatalf("decode thumbnail: %v", err)
+		t.Fatalf("CreateThumbnail() error: %v", err)
 	}
 
-	bounds := img.Bounds()
-	if bounds.Dx() != thumbnailSize {
-		t.Fatalf("expected width %d, got %d", thumbnailSize, bounds.Dx())
-	}
-	if bounds.Dy() > thumbnailSize {
-		t.Fatalf("expected height <= %d, got %d", thumbnailSize, bounds.Dy())
-	}
 }
 
 func TestProcessStandardImageReadError(t *testing.T) {
 	t.Parallel()
 
-	_, err := processStandardImage(errReader{}, storage.JPEG, thumbnailSize)
+	_, err := processJpegImage(errReader{}, storage.JPEG)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -163,7 +177,7 @@ func makeProcessorTestJPEGBytes(t *testing.T, width int, height int) []byte {
 
 type errReader struct{}
 
-func (errReader) Read(p []byte) (int, error) {
+func (errReader) Read(_ []byte) (int, error) {
 	return 0, errors.New("read error")
 }
 

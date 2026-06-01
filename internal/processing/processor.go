@@ -13,25 +13,16 @@ import (
 
 // CreateThumbnail generates a thumbnail for the given image based on its file extension and content type.
 func CreateThumbnail(key string, imgReader io.Reader, contentType string, thumbnailSize int) ([]byte, error) {
+	var thumbBytes []byte
+	var err error
+
 	switch strings.ToLower(path.Ext(key)) {
 	case ".cr3":
-		return processCR3Image(imgReader)
+		thumbBytes, err = processCR3Image(imgReader)
 	case ".orf":
-		return processORFImage(imgReader)
+		thumbBytes, err = processORFImage(imgReader)
 	default:
-		return processStandardImage(imgReader, contentType, thumbnailSize)
-	}
-}
-
-func processStandardImage(imgReader io.Reader, contentType string, thumbnailSize int) ([]byte, error) {
-	imageBytes, err := readImageBytes(imgReader, contentType)
-	if err != nil {
-		return nil, err
-	}
-
-	thumbBytes, err := thumbnailimage.Resize(imageBytes, thumbnailSize)
-	if err != nil {
-		return nil, fmt.Errorf("create thumbnail image: %w", err)
+		thumbBytes, err = processJpegImage(imgReader, contentType)
 	}
 
 	err = validateJPEG(thumbBytes)
@@ -39,9 +30,25 @@ func processStandardImage(imgReader io.Reader, contentType string, thumbnailSize
 		return nil, err
 	}
 
-	return thumbBytes, nil
+	resizeBytes, err := thumbnailimage.Resize(thumbBytes, thumbnailSize)
+	if err != nil {
+		return nil, fmt.Errorf("create thumbnail image: %w", err)
+	}
+
+	return resizeBytes, nil
 }
 
+// processJpegImage processes a JPEG by just returning it
+func processJpegImage(imgReader io.Reader, contentType string) ([]byte, error) {
+	imageBytes, err := readImageBytes(imgReader, contentType)
+	if err != nil {
+		return nil, err
+	}
+
+	return imageBytes, nil
+}
+
+// processCR3Image processes a Canon CR3 image by extracting the thumbnail from the PRVW box.
 func processCR3Image(imgReader io.Reader) ([]byte, error) {
 	data, err := thumbnailimage.Read(imgReader)
 	if err != nil {
@@ -53,14 +60,10 @@ func processCR3Image(imgReader io.Reader) ([]byte, error) {
 
 	thumbBytes, err := extractCR3Thumbnail(data)
 
-	err = validateJPEG(thumbBytes)
-	if err != nil {
-		return nil, err
-	}
-
 	return thumbBytes, err
 }
 
+// processORFImage processes an Olympus ORF image by extracting the thumbnail from the JPEG blob.
 func processORFImage(imgReader io.Reader) ([]byte, error) {
 	data, err := thumbnailimage.Read(imgReader)
 	if err != nil {
@@ -71,11 +74,6 @@ func processORFImage(imgReader io.Reader) ([]byte, error) {
 	}
 
 	thumbBytes, err := extractORFThumbnail(data)
-
-	err = validateJPEG(thumbBytes)
-	if err != nil {
-		return nil, err
-	}
 
 	return thumbBytes, err
 }
