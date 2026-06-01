@@ -74,6 +74,7 @@ func processORFImage(imgReader io.Reader) ([]byte, error) {
 	}
 
 	thumbBytes, err := extractORFThumbnail(data)
+	thumbBytes, err = rotateOrfThumb(thumbBytes)
 
 	return thumbBytes, err
 }

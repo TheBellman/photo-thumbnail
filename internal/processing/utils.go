@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 
 	thumbnailimage "github.com/TheBellman/photo-thumbnail/internal/image"
 	"github.com/TheBellman/photo-thumbnail/internal/storage"
+	"github.com/disintegration/imaging"
 	"github.com/rwcarlsen/goexif/exif"
 )
 
@@ -188,4 +191,21 @@ func validateJPEG(data []byte) error {
 		return fmt.Errorf("missing JPEG EOI marker")
 	}
 	return nil
+}
+
+func rotateOrfThumb(thumbBytes []byte) ([]byte, error) {
+	thumbImage, _, err := image.Decode(bytes.NewReader(thumbBytes))
+	if err != nil {
+		return nil, fmt.Errorf("decode thumb: %w", err)
+	}
+
+	rotatedImage := imaging.Rotate270(thumbImage)
+
+	buf := new(bytes.Buffer)
+	err = jpeg.Encode(buf, rotatedImage, &jpeg.Options{Quality: 90})
+	if err != nil {
+		return nil, fmt.Errorf("encode rotated thumb: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
