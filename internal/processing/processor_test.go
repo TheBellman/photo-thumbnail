@@ -17,45 +17,16 @@ import (
 
 const thumbnailSize = 200
 
-func TestIsOrf(t *testing.T) {
-	tests := []struct {
-		name string
-		key  string
-		want bool
-	}{
-		{
-			name: "cr3",
-			key:  "test.CR3",
-			want: false,
-		},
-		{
-			name: "orf",
-			key:  "test.ORF",
-			want: true,
-		},
-		{
-			name: "jpeg",
-			key:  "test.jpeg",
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := isORF(testFile(tt.key))
-			if result != tt.want {
-				t.Fatalf("isCR3() = %t, want %t", result, tt.want)
-			}
-		})
-	}
-}
-
 func TestExtractOrfThumbnail(t *testing.T) {
 	t.Parallel()
 	result, err := extractORFThumbnail(testFile("test.ORF"))
 	if err != nil {
 		t.Fatalf("extractORFThumbnail() error: %v", err)
+	}
+
+	err = validateJPEG(result)
+	if err != nil {
+		t.Fatalf("extractCR3Thumbnail() error: %v", err)
 	}
 
 	want := testFile("test_orf_thumb.jpg")
@@ -74,82 +45,31 @@ func TestExtractOrfThumbnail(t *testing.T) {
 	}
 }
 
-func TestIsCr3(t *testing.T) {
-	tests := []struct {
-		name string
-		key  string
-		want bool
-	}{
-		{
-			name: "cr3",
-			key:  "test.CR3",
-			want: true,
-		},
-		{
-			name: "orf",
-			key:  "test.ORF",
-			want: false,
-		},
-		{
-			name: "jpeg",
-			key:  "test.jpeg",
-			want: false,
-		},
+func TestExtractCR3Thumbnail(t *testing.T) {
+	t.Parallel()
+	result, err := extractCR3Thumbnail(testFile("test.CR3"))
+	if err != nil {
+		t.Fatalf("extractORFThumbnail() error: %v", err)
 	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := isCR3(testFile(tt.key))
-			if result != tt.want {
-				t.Fatalf("isCR3() = %t, want %t", result, tt.want)
-			}
-		})
-	}
-}
 
-func TestReadImageBytes(t *testing.T) {
-	tests := []struct {
-		name        string
-		key         string
-		contentType string
-	}{
-		{
-			name:        "cr3",
-			key:         "test.CR3",
-			contentType: "image/x-canon-cr3",
-		},
-		{
-			name:        "orf",
-			key:         "test.ORF",
-			contentType: "image/x-olympus-orf",
-		},
-		{
-			name:        "jpeg",
-			key:         "test.jpeg",
-			contentType: "image/jpeg",
-		},
-		{
-			name:        "heic",
-			key:         "test.HEIC",
-			contentType: "image/heic",
-		},
+	err = validateJPEG(result)
+	if err != nil {
+		t.Fatalf("extractCR3Thumbnail() error: %v", err)
 	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result, err := readImageBytes(mustOpenFile(tt.key), tt.contentType)
-			if err != nil {
-				t.Fatalf("readImageBytes() error: %v", err)
+
+	want := testFile("test_crf_thumb.jpg")
+
+	if !bytes.Equal(result, want) {
+		t.Errorf("extractCFFThumbnail() = %d bytes, want %d bytes", len(result), len(want))
+		// Help narrow down where the mismatch is.
+		if len(result) == len(want) {
+			for i := range result {
+				if result[i] != want[i] {
+					t.Errorf("first difference at byte %d: got 0x%02X, want 0x%02X", i, result[i], want[i])
+					break
+				}
 			}
-			if len(result) == 0 {
-				t.Fatalf("readImageBytes() = empty")
-			}
-			if result == nil {
-				t.Fatalf("readImageBytes() = returned nil")
-			}
-		})
+		}
 	}
 }
 
@@ -181,6 +101,11 @@ func TestCreateThumbnailRoutesRawFormats(t *testing.T) {
 			}
 			if len(thumbData) == 0 {
 				t.Fatalf("CreateThumbnail() = empty")
+			}
+
+			err = validateJPEG(thumbData)
+			if err != nil {
+				t.Fatalf("CreateThumbnail() error: %v", err)
 			}
 		})
 	}
@@ -218,28 +143,6 @@ func TestProcessStandardImageReadError(t *testing.T) {
 	}
 }
 
-func TestReadImageBytesJPEG(t *testing.T) {
-	t.Parallel()
-
-	input := []byte{1, 2, 3, 4}
-	got, err := readImageBytes(bytes.NewReader(input), storage.JPEG)
-	if err != nil {
-		t.Fatalf("readImageBytes() error: %v", err)
-	}
-	if !bytes.Equal(got, input) {
-		t.Fatalf("readImageBytes() = %v, want %v", got, input)
-	}
-}
-
-func TestReadImageBytesReadError(t *testing.T) {
-	t.Parallel()
-
-	_, err := readImageBytes(errReader{}, storage.JPEG)
-	if err == nil {
-		t.Fatalf("expected error")
-	}
-}
-
 func makeProcessorTestJPEGBytes(t *testing.T, width int, height int) []byte {
 	t.Helper()
 
@@ -264,7 +167,7 @@ func (errReader) Read(p []byte) (int, error) {
 	return 0, errors.New("read error")
 }
 
-// helper method to read a target file in testdata folder and return as bytes
+// helper method to read a target file in testdata folder and return as bytes - this is used in utils_test.go as well
 func testFile(name string) []byte {
 	data, err := io.ReadAll(mustOpenFile(name))
 	if err != nil {

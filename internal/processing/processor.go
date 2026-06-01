@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"path"
 	"strings"
 
 	thumbnailimage "github.com/TheBellman/photo-thumbnail/internal/image"
-	"github.com/TheBellman/photo-thumbnail/internal/storage"
 )
 
 // CreateThumbnail generates a thumbnail for the given image based on its file extension and content type.
@@ -34,6 +34,11 @@ func processStandardImage(imgReader io.Reader, contentType string, thumbnailSize
 		return nil, fmt.Errorf("create thumbnail image: %w", err)
 	}
 
+	err = validateJPEG(thumbBytes)
+	if err != nil {
+		return nil, err
+	}
+
 	return thumbBytes, nil
 }
 
@@ -46,7 +51,14 @@ func processCR3Image(imgReader io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("invalid CR3 image")
 	}
 
-	return nil, fmt.Errorf("CR3 image processing is not implemented")
+	thumbBytes, err := extractCR3Thumbnail(data)
+
+	err = validateJPEG(thumbBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return thumbBytes, err
 }
 
 func processORFImage(imgReader io.Reader) ([]byte, error) {
@@ -58,8 +70,14 @@ func processORFImage(imgReader io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("invalid ORF image")
 	}
 
-	thumb, err := extractORFThumbnail(data)
-	return thumb, err
+	thumbBytes, err := extractORFThumbnail(data)
+
+	err = validateJPEG(thumbBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return thumbBytes, err
 }
 
 // extractORFThumbnail extracts the thumbnail from the given ORF image.
@@ -85,44 +103,52 @@ func extractORFThumbnail(data []byte) ([]byte, error) {
 	return thumb, nil
 }
 
-// isCR3 checks for the ISOBMFF ftyp box with Canon's 'crx ' brand.
-// CR3 byte layout: [size:4][ftyp:4][brand:4]...
-func isCR3(data []byte) bool {
-	if len(data) < 12 {
-		return false
-	}
-	if string(data[4:8]) != "ftyp" {
-		return false
-	}
-	brand := string(data[8:12])
-	return brand == "crx " || brand == "CRX "
-}
+// extractCR3Thumbnail extracts the thumbnail from the given CR3 binary blob.
+func extractCR3Thumbnail(data []byte) ([]byte, error) {
+	// Search uuid boxes at BOTH the top level and inside moov.
+	// On the EOS 90D (and many other Canon ISOBMFF cameras) the PRVW uuid
+	// sits at the top level of the file, not nested inside moov.
+	var allUUIDs []isobmffBox
 
-// isORF checks for the Olympus Raw Format TIFF magic bytes.
-// Little-endian ORF: "IIRO"  (49 49 52 4F)
-// Big-endian    ORF: "MMOR"  (4D 4D 4F 52)
-func isORF(data []byte) bool {
-	if len(data) < 4 {
-		return false
-	}
-	sig := string(data[0:4])
-	return sig == "IIRO" || sig == "MMOR"
-}
+	topLevel := findBoxes(data, "uuid")
+	allUUIDs = append(allUUIDs, topLevel...)
 
-func readImageBytes(imgReader io.Reader, contentType string) ([]byte, error) {
-	if contentType == storage.HEIC {
-		imageBytes, err := thumbnailimage.ConvertHEICToJPEG(imgReader)
-		if err != nil {
-			return nil, fmt.Errorf("convert HEIC to JPEG: %w", err)
+	if moov, found := findBox(data, "moov"); found {
+		allUUIDs = append(allUUIDs, findBoxes(moov.payload, "uuid")...)
+	}
+
+	if len(allUUIDs) == 0 {
+		return nil, fmt.Errorf("CR3: no uuid boxes found anywhere in file")
+	}
+
+	var prvwPayload, cmt1Payload []byte
+	for _, ub := range allUUIDs {
+		if len(ub.payload) < 16 {
+			continue
 		}
-
-		return imageBytes, nil
+		switch {
+		case bytes.Equal(ub.payload[:16], canonPRVWuuid):
+			prvwPayload = ub.payload[16:]
+		case bytes.Equal(ub.payload[:16], canonCMT1uuid):
+			cmt1Payload = ub.payload[16:]
+		}
 	}
 
-	imageBytes, err := thumbnailimage.Read(imgReader)
-	if err != nil {
-		return nil, fmt.Errorf("read image bytes: %w", err)
+	if len(prvwPayload) > 0 {
+		thumb, err := jpegFromPRVW(prvwPayload)
+		if err == nil {
+			return thumb, nil
+		}
+		log.Printf("CR3: PRVW parse failed: %v", err)
 	}
 
-	return imageBytes, nil
+	if len(cmt1Payload) > 0 {
+		thumb, err := jpegFromCMT1(cmt1Payload)
+		if err == nil {
+			return thumb, nil
+		}
+		return nil, fmt.Errorf("CR3: PRVW and CMT1 both failed (CMT1: %w)", err)
+	}
+
+	return nil, fmt.Errorf("CR3: neither PRVW nor CMT1 uuid found (checked %d uuid boxes)", len(allUUIDs))
 }
