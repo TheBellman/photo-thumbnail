@@ -1,6 +1,10 @@
-package main
+package app
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/TheBellman/photo-thumbnail/internal/storage"
+)
 
 func TestMakeThumbKey(t *testing.T) {
 	t.Parallel()
@@ -16,7 +20,7 @@ func TestMakeThumbKey(t *testing.T) {
 		{
 			name:         "heic converts to jpeg",
 			key:          "photos/IMG_0001.HEIC",
-			contentType:  HEIC,
+			contentType:  storage.HEIC,
 			sourcePrefix: "photos/",
 			destPrefix:   "photos/thumbs/",
 			want:         "photos/thumbs/IMG_0001_heic.jpg",
@@ -24,7 +28,7 @@ func TestMakeThumbKey(t *testing.T) {
 		{
 			name:         "jpeg keeps name",
 			key:          "photos/IMG_0002.jpg",
-			contentType:  JPEG,
+			contentType:  storage.JPEG,
 			sourcePrefix: "photos/",
 			destPrefix:   "photos/thumbs/",
 			want:         "photos/thumbs/IMG_0002.jpg",
