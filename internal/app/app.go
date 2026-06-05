@@ -38,12 +38,13 @@ func (a *App) HandleLambdaEvent(ctx context.Context, snsEvent events.SNSEvent) (
 				continue
 			}
 
-			if err := a.processImage(ctx, event.S3.Bucket.Name, decodedKey); err != nil {
+			thumbPath, err := a.processImage(ctx, event.S3.Bucket.Name, decodedKey)
+			if err != nil {
 				logger.Error("failed to process image", "bucket", event.S3.Bucket.Name, "key", decodedKey, "error", err)
 				continue
 			}
 
-			logger.Info("processed request", "bucket", event.S3.Bucket.Name, "key", decodedKey)
+			logger.Info("processed request", "bucket", event.S3.Bucket.Name, "key", decodedKey, "thumb_path", thumbPath)
 			cnt++
 		}
 	}
@@ -73,22 +74,23 @@ func (a *App) validateEvent(event events.S3EventRecord, logger *slog.Logger) (st
 	return decodedKey, true
 }
 
-// processImage processes an image from the specified S3 bucket and key, generates a thumbnail, and saves it to the destination.
-func (a *App) processImage(ctx context.Context, bucket string, key string) error {
+// processImage processes an image from the specified S3 bucket and key, generates a thumbnail, and saves it to the
+// destination. it returns the thumbnail path.
+func (a *App) processImage(ctx context.Context, bucket string, key string) (string, error) {
 	imgReader, contentType, err := storage.GetImageReader(ctx, a.S3, bucket, key)
 	if err != nil {
-		return fmt.Errorf("get image reader: %w", err)
+		return "", fmt.Errorf("get image reader: %w", err)
 	}
 
 	thumbBytes, err := processing.CreateThumbnail(key, imgReader, contentType, ThumbnailSize)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	thumbKey := makeThumbKey(key, contentType, a.Config.SourcePrefix, a.Config.DestPrefix)
 	if err = storage.SaveThumbnail(ctx, a.S3, thumbBytes, a.Config.DestBucket, thumbKey); err != nil {
-		return fmt.Errorf("save thumbnail: %w", err)
+		return "", fmt.Errorf("save thumbnail: %w", err)
 	}
 
-	return nil
+	return thumbKey, nil
 }

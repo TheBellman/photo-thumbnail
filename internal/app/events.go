@@ -36,10 +36,23 @@ func findRequestID(ctx context.Context) string {
 	return ""
 }
 
-// makeThumbKey should replace the old prefix on the key with the new thumbnail prefix.
+// makeThumbKey should replace the old prefix on the key with the new thumbnail prefix and also update the suffix.
 func makeThumbKey(key string, contentType string, sourcePrefix string, destPrefix string) string {
-	if contentType == storage.HEIC && strings.EqualFold(path.Ext(key), ".heic") {
-		key = strings.TrimSuffix(key, path.Ext(key)) + "_heic.jpg"
+	ext := strings.ToLower(path.Ext(key))
+
+	// Define which extensions need a specific tagged suffix
+	taggedExtensions := map[string]string{
+		".heic": "_heic.jpg",
+		".cr3":  "_cr3.jpg",
+		".orf":  "_orf.jpg",
 	}
+
+	if suffix, transform := taggedExtensions[ext]; transform {
+		// Special check for HEIC content type if you want to be strict
+		if ext != ".heic" || contentType == storage.HEIC {
+			key = strings.TrimSuffix(key, path.Ext(key)) + suffix
+		}
+	}
+
 	return strings.Replace(key, sourcePrefix, destPrefix, 1)
 }
