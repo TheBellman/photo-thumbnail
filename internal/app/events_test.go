@@ -33,6 +33,22 @@ func TestMakeThumbKey(t *testing.T) {
 			destPrefix:   "photos/thumbs/",
 			want:         "photos/thumbs/IMG_0002.jpg",
 		},
+		{
+			name:         "cr3 converts to jpeg",
+			key:          "photos/IMG_0002.CR3",
+			contentType:  storage.JPEG,
+			sourcePrefix: "photos/",
+			destPrefix:   "photos/thumbs/",
+			want:         "photos/thumbs/IMG_0002_cr3.jpg",
+		},
+		{
+			name:         "orf converts to jpeg",
+			key:          "photos/IMG_0002.ORF",
+			contentType:  storage.JPEG,
+			sourcePrefix: "photos/",
+			destPrefix:   "photos/thumbs/",
+			want:         "photos/thumbs/IMG_0002_orf.jpg",
+		},
 	}
 
 	for _, tt := range tests {
